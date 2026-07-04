@@ -2,6 +2,8 @@ from omnifocus_inbox_triage import (
     Decision,
     should_move,
     partition_decisions,
+    parse_read_result,
+    active_projects,
 )
 
 
@@ -53,3 +55,23 @@ def test_partition_dedupes_repeated_item_id():
     decisions = [mk(item_id="t1"), mk(item_id="t1")]
     to_move, to_leave = partition_decisions(decisions, ["t1"], ["p1"])
     assert len(to_move) + len(to_leave) == 1
+
+
+def test_parse_read_result_splits_items_and_projects():
+    stdout = (
+        '{"items": [{"id": "t1", "name": "Vet appt", "note": ""}],'
+        ' "projects": [{"id": "p1", "name": "Pets", "folderPath": "Home", "status": "active status"}]}'
+    )
+    items, projects = parse_read_result(stdout)
+    assert items[0]["name"] == "Vet appt"
+    assert projects[0]["id"] == "p1"
+
+
+def test_active_projects_filters_non_active():
+    projects = [
+        {"id": "p1", "name": "Pets", "status": "active status"},
+        {"id": "p2", "name": "Old", "status": "done status"},
+        {"id": "p3", "name": "Later", "status": "on hold status"},
+    ]
+    kept = active_projects(projects)
+    assert [p["id"] for p in kept] == ["p1"]

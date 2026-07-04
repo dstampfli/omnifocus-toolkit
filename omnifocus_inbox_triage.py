@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """OmniFocus Inbox triage: categorize Inbox tasks into existing projects via Claude."""
 
+import json
+import subprocess
+import sys
 from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
@@ -52,3 +55,75 @@ def partition_decisions(decisions, item_ids, project_ids,
         else:
             to_leave.append(d)
     return to_move, to_leave
+
+
+# ------------------------------- read stage -------------------------------
+
+def parse_read_result(stdout: str) -> Tuple[list, list]:
+    payload = json.loads(stdout)
+    return payload["items"], payload["projects"]
+
+
+def active_projects(projects: list) -> list:
+    return [
+        p for p in projects
+        if str(p.get("status", "")).lower().startswith("active")
+    ]
+
+
+READ_JXA = r"""
+function run() {
+    const of = Application('OmniFocus');
+    of.includeStandardAdditions = true;
+    const ofDoc = of.defaultDocument;
+
+    const items = [];
+    const inbox = ofDoc.inboxTasks();
+    for (let i = 0; i < inbox.length; i++) {
+        const t = inbox[i];
+        let note = '';
+        try { note = t.note() || ''; } catch (e) {}
+        items.push({ id: t.id(), name: t.name(), note: note });
+    }
+
+    const projects = [];
+    const projs = ofDoc.flattenedProjects();
+    for (let i = 0; i < projs.length; i++) {
+        const p = projs[i];
+        let status = '';
+        try { status = String(p.status()); } catch (e) {}
+
+        let path = [];
+        try {
+            let f = p.container();
+            while (f && f.class && f.class() === 'folder') {
+                path.unshift(f.name());
+                f = f.container();
+            }
+        } catch (e) {}
+
+        projects.push({
+            id: p.id(),
+            name: p.name(),
+            folderPath: path.join(' ▸ '),
+            status: status,
+        });
+    }
+
+    return JSON.stringify({ items: items, projects: projects });
+}
+"""
+
+
+def read_omnifocus() -> Tuple[list, list]:
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", READ_JXA],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("osascript (read) failed:", file=sys.stderr)
+        print(result.stderr.strip(), file=sys.stderr)
+        raise SystemExit(1)
+    items, projects = parse_read_result(result.stdout.strip())
+    return items, active_projects(projects)
