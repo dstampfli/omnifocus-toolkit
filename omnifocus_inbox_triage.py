@@ -15,15 +15,43 @@ from pydantic import BaseModel
 # live there instead of the shell/profile. Absent .env is a harmless no-op.
 load_dotenv()
 
+CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
 # ----------------------------- configuration -----------------------------
 # Each setting falls back to the default when not set in .env / the environment.
 # ANTHROPIC_API_KEY is read from the environment by the anthropic SDK directly.
-MODEL = os.environ.get("MODEL", "claude-haiku-4-5")          # classification model id
-MOVE_MIN_CONFIDENCE = os.environ.get("MOVE_MIN_CONFIDENCE", "high")  # min confidence to move
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "25"))         # inbox items per API call
-# --------------------------------------------------------------------------
+# Values are validated here so a fat-fingered .env fails with a clear message
+# instead of a raw traceback deep inside the run (or at test collection).
+def _load_config():
+    model = os.environ.get("MODEL", "claude-haiku-4-5")  # classification model id
 
-CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+    min_conf = os.environ.get("MOVE_MIN_CONFIDENCE", "high").strip().lower()
+    if min_conf not in CONFIDENCE_RANK:
+        print(
+            f"Invalid MOVE_MIN_CONFIDENCE={os.environ.get('MOVE_MIN_CONFIDENCE')!r}; "
+            f"expected one of: {', '.join(CONFIDENCE_RANK)}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    raw_chunk = os.environ.get("CHUNK_SIZE", "25")
+    try:
+        chunk = int(raw_chunk)
+    except ValueError:
+        chunk = 0
+    if chunk < 1:
+        print(
+            f"Invalid CHUNK_SIZE={raw_chunk!r}; expected a positive integer.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    return model, min_conf, chunk
+
+
+MODEL, MOVE_MIN_CONFIDENCE, CHUNK_SIZE = _load_config()
+# --------------------------------------------------------------------------
 
 
 class Decision(BaseModel):
@@ -241,6 +269,11 @@ function run(argv) {
     // does NOT relocate the task; OmniJS `moveTasks(tasks, project.ending)`
     // performs a real move. Tasks/projects are matched by identifier, which
     // equals the JXA `.id()` captured during the read.
+    // Safety: only the `moves` list — objects of {taskId, projectId} that the
+    // Python side has already whitelisted against real OmniFocus ids — is
+    // embedded into the OmniJS source. Embed IDS ONLY here; never interpolate
+    // task names, notes, or other free text into this program (JSON.stringify
+    // does not escape U+2028/U+2029, so free text could break out of the source).
     const of = Application('OmniFocus');
     const movesJson = JSON.stringify(JSON.parse(argv[0]).moves);
     const omni =
@@ -274,7 +307,12 @@ def apply_moves(to_move: List[Decision]) -> Tuple[list, list]:
         print("osascript (apply) failed:", file=sys.stderr)
         print(result.stderr.strip(), file=sys.stderr)
         raise SystemExit(1)
-    payload = json.loads(result.stdout.strip())
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        print("osascript (apply) returned unexpected output:", file=sys.stderr)
+        print(result.stdout.strip(), file=sys.stderr)
+        raise SystemExit(1)
     return payload.get("moved", []), payload.get("failed", [])
 
 

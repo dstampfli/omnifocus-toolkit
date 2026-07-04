@@ -1,3 +1,5 @@
+import pytest
+
 from omnifocus_inbox_triage import (
     Decision,
     should_move,
@@ -5,6 +7,7 @@ from omnifocus_inbox_triage import (
     parse_read_result,
     active_projects,
     chunk_items,
+    _load_config,
 )
 
 
@@ -22,8 +25,10 @@ def test_should_move_high_confidence_valid_ids():
     assert should_move(mk(), {"t1"}, {"p1"}) is True
 
 
-def test_should_move_rejects_medium_by_default():
-    assert should_move(mk(confidence="medium"), {"t1"}, {"p1"}) is False
+def test_should_move_rejects_medium_when_threshold_high():
+    # Pass min_confidence explicitly so the test is independent of the ambient
+    # MOVE_MIN_CONFIDENCE (a developer's .env may set it to `medium`).
+    assert should_move(mk(confidence="medium"), {"t1"}, {"p1"}, min_confidence="high") is False
 
 
 def test_should_move_allows_medium_when_threshold_lowered():
@@ -47,7 +52,7 @@ def test_partition_splits_move_and_leave():
         mk(item_id="t1", confidence="high"),
         mk(item_id="t2", confidence="low"),
     ]
-    to_move, to_leave = partition_decisions(decisions, ["t1", "t2"], ["p1"])
+    to_move, to_leave = partition_decisions(decisions, ["t1", "t2"], ["p1"], min_confidence="high")
     assert [d.item_id for d in to_move] == ["t1"]
     assert [d.item_id for d in to_leave] == ["t2"]
 
@@ -181,3 +186,36 @@ def test_format_report_failed_move_not_labeled_moved():
     lines = out.splitlines()
     moved_line = next((l for l in lines if l.startswith("Moved")), "")
     assert "Vet appt" not in moved_line
+
+
+def test_load_config_defaults(monkeypatch):
+    for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE"):
+        monkeypatch.delenv(k, raising=False)
+    model, conf, chunk = _load_config()
+    assert model == "claude-haiku-4-5"
+    assert conf == "high"
+    assert chunk == 25
+
+
+def test_load_config_normalizes_confidence_case(monkeypatch):
+    monkeypatch.setenv("MOVE_MIN_CONFIDENCE", "Medium")
+    _, conf, _ = _load_config()
+    assert conf == "medium"
+
+
+def test_load_config_rejects_bad_confidence(monkeypatch):
+    monkeypatch.setenv("MOVE_MIN_CONFIDENCE", "hi")
+    with pytest.raises(SystemExit):
+        _load_config()
+
+
+def test_load_config_rejects_non_numeric_chunk_size(monkeypatch):
+    monkeypatch.setenv("CHUNK_SIZE", "lots")
+    with pytest.raises(SystemExit):
+        _load_config()
+
+
+def test_load_config_rejects_non_positive_chunk_size(monkeypatch):
+    monkeypatch.setenv("CHUNK_SIZE", "0")
+    with pytest.raises(SystemExit):
+        _load_config()
