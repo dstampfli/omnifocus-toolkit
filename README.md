@@ -48,10 +48,13 @@ copied tasks in OmniFocus. All communication between the two happens as JSON.
 
 ## Inbox triage (`omnifocus_inbox_triage.py`)
 
-Reads every OmniFocus Inbox task and uses the Claude API to categorize each one
-against your existing **active projects**, then moves confidently-matched tasks
-into their project. Low-confidence or unmatched items are left in the Inbox and
-reported for manual filing.
+Reads every **open** OmniFocus Inbox item (completed items are skipped) and uses
+the Claude API to categorize each one against your existing **active projects**,
+then moves confidently-matched tasks into their project. Low-confidence or
+unmatched items are left in the Inbox and reported for manual filing.
+
+By default it's a **dry run** — it classifies and prints a report, changing
+nothing. Pass `--apply` to actually move the matched tasks.
 
 **Guide the classifier with project descriptions.** The model reads each
 project's **OmniFocus note** as a description of what belongs there, and that
