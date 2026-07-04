@@ -164,3 +164,57 @@ def classify(items, projects):
         output_format=Classification,
     )
     return response.parsed_output
+
+
+# ------------------------------- apply stage -------------------------------
+
+def build_apply_config(to_move: List[Decision]) -> dict:
+    return {"moves": [{"taskId": d.item_id, "projectId": d.project_id} for d in to_move]}
+
+
+WRITE_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    of.includeStandardAdditions = true;
+    const ofDoc = of.defaultDocument;
+
+    const projById = {};
+    const projs = ofDoc.flattenedProjects();
+    for (let i = 0; i < projs.length; i++) { projById[projs[i].id()] = projs[i]; }
+
+    const taskById = {};
+    const inbox = ofDoc.inboxTasks();
+    for (let i = 0; i < inbox.length; i++) { taskById[inbox[i].id()] = inbox[i]; }
+
+    const moved = [];
+    const failed = [];
+    for (let i = 0; i < cfg.moves.length; i++) {
+        const m = cfg.moves[i];
+        const t = taskById[m.taskId];
+        const p = projById[m.projectId];
+        if (!t || !p) { failed.push(m.taskId); continue; }
+        try {
+            t.assignedContainer = p;
+            moved.push(t.name());
+        } catch (e) { failed.push(m.taskId); }
+    }
+
+    return JSON.stringify({ moved: moved, failed: failed });
+}
+"""
+
+
+def apply_moves(to_move: List[Decision]) -> Tuple[list, list]:
+    cfg = json.dumps(build_apply_config(to_move))
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", WRITE_JXA, cfg],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("osascript (apply) failed:", file=sys.stderr)
+        print(result.stderr.strip(), file=sys.stderr)
+        raise SystemExit(1)
+    payload = json.loads(result.stdout.strip())
+    return payload.get("moved", []), payload.get("failed", [])

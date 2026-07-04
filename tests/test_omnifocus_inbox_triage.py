@@ -94,3 +94,15 @@ def test_build_user_content_embeds_ids_as_json():
     parsed = _json.loads(content)
     assert parsed["inbox_items"][0]["id"] == "t1"
     assert parsed["projects"][0]["id"] == "p1"
+
+
+from omnifocus_inbox_triage import build_apply_config
+
+
+def test_build_apply_config_maps_ids():
+    to_move = [mk(item_id="t1", project_id="p1"), mk(item_id="t2", project_id="p9")]
+    cfg = build_apply_config(to_move)
+    assert cfg["moves"] == [
+        {"taskId": "t1", "projectId": "p1"},
+        {"taskId": "t2", "projectId": "p9"},
+    ]
