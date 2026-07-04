@@ -53,6 +53,13 @@ against your existing **active projects**, then moves confidently-matched tasks
 into their project. Low-confidence or unmatched items are left in the Inbox and
 reported for manual filing.
 
+**Guide the classifier with project descriptions.** The model reads each
+project's **OmniFocus note** as a description of what belongs there, and that
+description takes precedence over the project name. Adding a one-line note to
+each project (e.g. *"Me — personal: repairs, appliances, utilities"*) markedly
+improves accuracy, since names alone are often ambiguous (two similarly-named projects).
+Projects with no note fall back to name and folder path.
+
 Requires an Anthropic API key in addition to the OmniFocus/macOS requirements
 above. Install dependencies with `uv sync`.
 

@@ -86,6 +86,7 @@ def test_build_system_prompt_mentions_key_rules():
     prompt = build_system_prompt().lower()
     assert "project" in prompt
     assert "confidence" in prompt
+    assert "description" in prompt
 
 
 def test_build_user_content_embeds_ids_as_json():
@@ -95,6 +96,23 @@ def test_build_user_content_embeds_ids_as_json():
     parsed = _json.loads(content)
     assert parsed["inbox_items"][0]["id"] == "t1"
     assert parsed["projects"][0]["id"] == "p1"
+
+
+def test_build_user_content_includes_project_description():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    projects = [{"id": "p1", "name": "Pets", "folderPath": "Home",
+                 "description": "Pet care: vet, food, grooming"}]
+    parsed = _json.loads(build_user_content(items, projects))
+    assert parsed["projects"][0]["description"] == "Pet care: vet, food, grooming"
+    # the internal status field must not leak to the model
+    assert "status" not in parsed["projects"][0]
+
+
+def test_build_user_content_defaults_missing_description_to_empty():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    projects = [{"id": "p1", "name": "Pets", "folderPath": "Home"}]
+    parsed = _json.loads(build_user_content(items, projects))
+    assert parsed["projects"][0]["description"] == ""
 
 
 from omnifocus_inbox_triage import build_apply_config

@@ -123,10 +123,16 @@ function run() {
             }
         } catch (e) {}
 
+        // The project's OmniFocus note doubles as its triage description:
+        // one line telling the classifier what belongs in this project.
+        let note = '';
+        try { note = p.note() || ''; } catch (e) {}
+
         projects.push({
             id: p.id(),
             name: p.name(),
             folderPath: path.join(' ▸ '),
+            description: note,
             status: status,
         });
     }
@@ -155,8 +161,13 @@ def read_omnifocus() -> Tuple[list, list]:
 def build_system_prompt():
     return (
         "You triage a GTD inbox. You are given a list of the user's existing "
-        "OmniFocus projects (each with an id, name, and folder path) and a list "
-        "of inbox items (each with an id, name, and note).\n\n"
+        "OmniFocus projects (each with an id, name, folder path, and a "
+        "description of what belongs in it) and a list of inbox items (each with "
+        "an id, name, and note).\n\n"
+        "Rely on each project's description to decide what belongs there; it is "
+        "the user's own statement of the project's scope and takes precedence "
+        "over the project name. When a project's description is empty, fall back "
+        "to its name and folder path.\n\n"
         "For EACH inbox item, choose the single best-matching project, or decline "
         "if none is a good home. Return one decision per inbox item.\n\n"
         "For each decision provide:\n"
@@ -171,7 +182,24 @@ def build_system_prompt():
 
 
 def build_user_content(items, projects):
-    return json.dumps({"projects": projects, "inbox_items": items}, ensure_ascii=False)
+    # Send the model only the fields it needs to decide: the internal `status`
+    # is filtered out, and each project's note is surfaced as `description`.
+    slim_projects = [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "folderPath": p.get("folderPath", ""),
+            "description": p.get("description", ""),
+        }
+        for p in projects
+    ]
+    slim_items = [
+        {"id": i["id"], "name": i["name"], "note": i.get("note", "")}
+        for i in items
+    ]
+    return json.dumps(
+        {"projects": slim_projects, "inbox_items": slim_items}, ensure_ascii=False
+    )
 
 
 def classify(items, projects):
