@@ -208,33 +208,29 @@ def build_apply_config(to_move: List[Decision]) -> dict:
 
 WRITE_JXA = r"""
 function run(argv) {
-    const cfg = JSON.parse(argv[0]);
+    // Move each task into its project via the Omni Automation (OmniJS) bridge.
+    // Setting `assignedContainer` from JXA only marks a pending assignment and
+    // does NOT relocate the task; OmniJS `moveTasks(tasks, project.ending)`
+    // performs a real move. Tasks/projects are matched by identifier, which
+    // equals the JXA `.id()` captured during the read.
     const of = Application('OmniFocus');
-    of.includeStandardAdditions = true;
-    const ofDoc = of.defaultDocument;
-
-    const projById = {};
-    const projs = ofDoc.flattenedProjects();
-    for (let i = 0; i < projs.length; i++) { projById[projs[i].id()] = projs[i]; }
-
-    const taskById = {};
-    const inbox = ofDoc.inboxTasks();
-    for (let i = 0; i < inbox.length; i++) { taskById[inbox[i].id()] = inbox[i]; }
-
-    const moved = [];
-    const failed = [];
-    for (let i = 0; i < cfg.moves.length; i++) {
-        const m = cfg.moves[i];
-        const t = taskById[m.taskId];
-        const p = projById[m.projectId];
-        if (!t || !p) { failed.push(m.taskId); continue; }
-        try {
-            t.assignedContainer = p;
-            moved.push(t.name());
-        } catch (e) { failed.push(m.taskId); }
-    }
-
-    return JSON.stringify({ moved: moved, failed: failed });
+    const movesJson = JSON.stringify(JSON.parse(argv[0]).moves);
+    const omni =
+        "(() => {" +
+        "  const moves = " + movesJson + ";" +
+        "  const moved = [];" +
+        "  const failed = [];" +
+        "  moves.forEach(m => {" +
+        "    const task = inbox.find(t => t.id.primaryKey === m.taskId)" +
+        "              || flattenedTasks.find(t => t.id.primaryKey === m.taskId);" +
+        "    const proj = flattenedProjects.find(p => p.id.primaryKey === m.projectId);" +
+        "    if (!task || !proj) { failed.push(m.taskId); return; }" +
+        "    try { moveTasks([task], proj.ending); moved.push(task.name); }" +
+        "    catch (e) { failed.push(m.taskId); }" +
+        "  });" +
+        "  return JSON.stringify({ moved: moved, failed: failed });" +
+        "})()";
+    return of.evaluateJavascript(omni);
 }
 """
 
