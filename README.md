@@ -45,3 +45,23 @@ program executed via `osascript`. The Python side handles CLI flags and formats
 output; the JXA side pulls the tagged inbox tasks, locates the anchor row, appends
 the new rows (deduping against existing topics), and optionally completes the
 copied tasks in OmniFocus. All communication between the two happens as JSON.
+
+## Inbox triage (`omnifocus_inbox_triage.py`)
+
+Reads every OmniFocus Inbox task and uses the Claude API to categorize each one
+against your existing **active projects**, then moves confidently-matched tasks
+into their project. Low-confidence or unmatched items are left in the Inbox and
+reported for manual filing.
+
+Requires `ANTHROPIC_API_KEY` (or an active `ant auth login` profile) in addition
+to the OmniFocus/macOS requirements above. Install dependencies with `uv sync`.
+
+```bash
+python omnifocus_inbox_triage.py            # dry-run: classify and report, change nothing
+python omnifocus_inbox_triage.py --apply    # classify, then move high-confidence matches
+```
+
+Tune the constants at the top of the script: `MODEL` (the Anthropic model id;
+`claude-haiku-4-5` is a cheaper alternative for this simple classification) and
+`MOVE_MIN_CONFIDENCE` (`high` by default; set to `medium` to also move
+medium-confidence matches).
