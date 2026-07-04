@@ -97,6 +97,11 @@ function run() {
     const inbox = ofDoc.inboxTasks();
     for (let i = 0; i < inbox.length; i++) {
         const t = inbox[i];
+        // Skip completed tasks: inboxTasks() includes finished items that no
+        // longer appear in the Inbox perspective; only triage open ones.
+        let done = false;
+        try { done = t.completed(); } catch (e) {}
+        if (done) continue;
         let note = '';
         try { note = t.note() || ''; } catch (e) {}
         items.push({ id: t.id(), name: t.name(), note: note });
