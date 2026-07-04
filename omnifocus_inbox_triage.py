@@ -218,3 +218,58 @@ def apply_moves(to_move: List[Decision]) -> Tuple[list, list]:
         raise SystemExit(1)
     payload = json.loads(result.stdout.strip())
     return payload.get("moved", []), payload.get("failed", [])
+
+
+# --------------------------- reporting & CLI --------------------------------
+
+def format_report(to_move, to_leave, items, dry_run):
+    names = {i["id"]: i["name"] for i in items}
+    lines = []
+
+    if to_move:
+        verb = "Will move" if dry_run else "Moved"
+        lines.append(f"{verb} {len(to_move)} item(s):")
+        for d in to_move:
+            name = names.get(d.item_id, d.item_id)
+            lines.append(f"  + {name} -> {d.project_name} ({d.reason})")
+
+    if to_leave:
+        lines.append("")
+        lines.append(f"Left in Inbox ({len(to_leave)}):")
+        for d in to_leave:
+            name = names.get(d.item_id, d.item_id)
+            lines.append(f"  = {name} - {d.reason or 'no confident match'}")
+
+    if not to_move and not to_leave:
+        lines.append("Nothing to do.")
+
+    return "\n".join(lines)
+
+
+def main():
+    apply = "--apply" in sys.argv
+    dry_run = not apply
+
+    items, projects = read_omnifocus()
+    if not items:
+        print('No inbox tasks to triage.')
+        return 0
+
+    classification = classify(items, projects)
+    item_ids = [i["id"] for i in items]
+    project_ids = [p["id"] for p in projects]
+    to_move, to_leave = partition_decisions(
+        classification.decisions, item_ids, project_ids
+    )
+
+    if apply and to_move:
+        moved, failed = apply_moves(to_move)
+        if failed:
+            print(f"Warning: {len(failed)} move(s) failed: {failed}", file=sys.stderr)
+
+    print(format_report(to_move, to_leave, items, dry_run=dry_run))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -106,3 +106,31 @@ def test_build_apply_config_maps_ids():
         {"taskId": "t1", "projectId": "p1"},
         {"taskId": "t2", "projectId": "p9"},
     ]
+
+
+from omnifocus_inbox_triage import format_report
+
+
+def test_format_report_dry_run_says_will_move():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    to_move = [mk(item_id="t1", project_id="p1")]
+    out = format_report(to_move, [], items, dry_run=True)
+    assert "Will move" in out
+    assert "Vet appt" in out
+    assert "Pets" in out
+
+
+def test_format_report_apply_says_moved():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    to_move = [mk(item_id="t1", project_id="p1")]
+    out = format_report(to_move, [], items, dry_run=False)
+    assert "Moved" in out
+
+
+def test_format_report_lists_left_behind_items_with_reason():
+    items = [{"id": "t2", "name": "Random thought", "note": ""}]
+    to_leave = [mk(item_id="t2", project_id=None, confidence="low")]
+    out = format_report([], to_leave, items, dry_run=True)
+    assert "Left in Inbox" in out
+    assert "Random thought" in out
+    assert "about the cat" in out  # the reason text from mk()
