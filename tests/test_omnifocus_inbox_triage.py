@@ -75,3 +75,22 @@ def test_active_projects_filters_non_active():
     ]
     kept = active_projects(projects)
     assert [p["id"] for p in kept] == ["p1"]
+
+
+import json as _json
+from omnifocus_inbox_triage import build_system_prompt, build_user_content
+
+
+def test_build_system_prompt_mentions_key_rules():
+    prompt = build_system_prompt().lower()
+    assert "project" in prompt
+    assert "confidence" in prompt
+
+
+def test_build_user_content_embeds_ids_as_json():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    projects = [{"id": "p1", "name": "Pets", "folderPath": "Home"}]
+    content = build_user_content(items, projects)
+    parsed = _json.loads(content)
+    assert parsed["inbox_items"][0]["id"] == "t1"
+    assert parsed["projects"][0]["id"] == "p1"

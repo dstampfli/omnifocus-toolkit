@@ -6,6 +6,7 @@ import subprocess
 import sys
 from typing import List, Literal, Optional, Tuple
 
+import anthropic
 from pydantic import BaseModel
 
 # ----------------------------- configuration -----------------------------
@@ -127,3 +128,39 @@ def read_omnifocus() -> Tuple[list, list]:
         raise SystemExit(1)
     items, projects = parse_read_result(result.stdout.strip())
     return items, active_projects(projects)
+
+
+# ----------------------------- classify stage -----------------------------
+
+def build_system_prompt():
+    return (
+        "You triage a GTD inbox. You are given a list of the user's existing "
+        "OmniFocus projects (each with an id, name, and folder path) and a list "
+        "of inbox items (each with an id, name, and note).\n\n"
+        "For EACH inbox item, choose the single best-matching project, or decline "
+        "if none is a good home. Return one decision per inbox item.\n\n"
+        "For each decision provide:\n"
+        "- item_id: the inbox item's id, copied exactly.\n"
+        "- project_id: the matching project's id, or null if no project fits well.\n"
+        "- project_name: the matching project's name (empty string if project_id is null).\n"
+        "- confidence: 'high', 'medium', or 'low'. Use 'high' only when the item "
+        "clearly belongs to that project.\n"
+        "- reason: one short sentence justifying the choice.\n\n"
+        "Only use project ids from the provided list. Do not invent projects."
+    )
+
+
+def build_user_content(items, projects):
+    return json.dumps({"projects": projects, "inbox_items": items}, ensure_ascii=False)
+
+
+def classify(items, projects):
+    client = anthropic.Anthropic()
+    response = client.messages.parse(
+        model=MODEL,
+        max_tokens=8192,
+        system=build_system_prompt(),
+        messages=[{"role": "user", "content": build_user_content(items, projects)}],
+        output_format=Classification,
+    )
+    return response.parsed_output
