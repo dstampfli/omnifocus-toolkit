@@ -156,13 +156,19 @@ def build_user_content(items, projects):
 
 def classify(items, projects):
     client = anthropic.Anthropic()
-    response = client.messages.parse(
-        model=MODEL,
-        max_tokens=8192,
-        system=build_system_prompt(),
-        messages=[{"role": "user", "content": build_user_content(items, projects)}],
-        output_format=Classification,
-    )
+    try:
+        response = client.messages.parse(
+            model=MODEL,
+            max_tokens=8192,
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": build_user_content(items, projects)}],
+            output_format=Classification,
+        )
+    except anthropic.APIError as e:
+        # Covers auth, rate-limit, connection, and other API/status errors
+        # (APIConnectionError is a subclass of APIError in this SDK version).
+        print(f"Claude API request failed: {e}", file=sys.stderr)
+        raise SystemExit(1)
     return response.parsed_output
 
 
@@ -222,16 +228,28 @@ def apply_moves(to_move: List[Decision]) -> Tuple[list, list]:
 
 # --------------------------- reporting & CLI --------------------------------
 
-def format_report(to_move, to_leave, items, dry_run):
+def format_report(to_move, to_leave, items, dry_run, failed_ids=None):
+    failed_ids = set(failed_ids) if failed_ids else set()
     names = {i["id"]: i["name"] for i in items}
     lines = []
 
-    if to_move:
+    moved = [d for d in to_move if d.item_id not in failed_ids]
+    failed = [d for d in to_move if d.item_id in failed_ids]
+
+    if moved:
         verb = "Will move" if dry_run else "Moved"
-        lines.append(f"{verb} {len(to_move)} item(s):")
-        for d in to_move:
+        lines.append(f"{verb} {len(moved)} item(s):")
+        for d in moved:
             name = names.get(d.item_id, d.item_id)
             lines.append(f"  + {name} -> {d.project_name} ({d.reason})")
+
+    if failed:
+        if lines:
+            lines.append("")
+        lines.append("Failed to move (still in Inbox):")
+        for d in failed:
+            name = names.get(d.item_id, d.item_id)
+            lines.append(f"  ! {name} -> {d.project_name} ({d.reason})")
 
     if to_leave:
         lines.append("")
@@ -263,12 +281,14 @@ def main():
     )
 
     if apply and to_move:
-        moved, failed = apply_moves(to_move)
+        _, failed = apply_moves(to_move)
         if failed:
             print(f"Warning: {len(failed)} move(s) failed: {failed}", file=sys.stderr)
+    else:
+        failed = []
 
-    print(format_report(to_move, to_leave, items, dry_run=dry_run))
-    return 0
+    print(format_report(to_move, to_leave, items, dry_run=dry_run, failed_ids=failed))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

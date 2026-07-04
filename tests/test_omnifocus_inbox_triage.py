@@ -134,3 +134,15 @@ def test_format_report_lists_left_behind_items_with_reason():
     assert "Left in Inbox" in out
     assert "Random thought" in out
     assert "about the cat" in out  # the reason text from mk()
+
+
+def test_format_report_failed_move_not_labeled_moved():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    to_move = [mk(item_id="t1", project_id="p1")]
+    out = format_report(to_move, [], items, dry_run=False, failed_ids=["t1"])
+    assert "Failed to move" in out
+    assert "Vet appt" in out
+    # the moved/success group must not claim this item
+    lines = out.splitlines()
+    moved_line = next((l for l in lines if l.startswith("Moved")), "")
+    assert "Vet appt" not in moved_line
