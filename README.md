@@ -53,18 +53,31 @@ against your existing **active projects**, then moves confidently-matched tasks
 into their project. Low-confidence or unmatched items are left in the Inbox and
 reported for manual filing.
 
-Requires `ANTHROPIC_API_KEY` (or an active `ant auth login` profile) in addition
-to the OmniFocus/macOS requirements above. Install dependencies with `uv sync`.
+Requires an Anthropic API key in addition to the OmniFocus/macOS requirements
+above. Install dependencies with `uv sync`.
+
+Configuration lives in a local `.env` file (gitignored). Copy the template and
+add your key:
+
+```bash
+cp .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+```
 
 ```bash
 python omnifocus_inbox_triage.py            # dry-run: classify and report, change nothing
 python omnifocus_inbox_triage.py --apply    # classify, then move high-confidence matches
 ```
 
-Tune the constants at the top of the script: `MODEL` (the Anthropic model id;
-defaults to `claude-haiku-4-5` for this simple classification, with
-`claude-opus-4-8` available as a higher-quality, higher-cost alternative),
-`MOVE_MIN_CONFIDENCE` (`high` by default; set to `medium` to also move
-medium-confidence matches), and `CHUNK_SIZE` (inbox items sent per
-classification API call; the script automatically processes large inboxes in
-batches so a single call's output never exceeds the model's token limit).
+`.env` settings (each falls back to a built-in default if omitted):
+
+- `ANTHROPIC_API_KEY` — your Anthropic key (read automatically by the SDK). An
+  `ant auth login` profile or an exported env var works too.
+- `MODEL` — the classification model id; defaults to `claude-haiku-4-5` for this
+  simple task, with `claude-opus-4-8` available as a higher-quality, higher-cost
+  alternative.
+- `MOVE_MIN_CONFIDENCE` — `high` by default; set to `medium` to also move
+  medium-confidence matches.
+- `CHUNK_SIZE` — inbox items sent per classification API call; the script
+  processes large inboxes in batches so a single call's output never exceeds the
+  model's token limit.

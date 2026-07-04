@@ -2,17 +2,25 @@
 """OmniFocus Inbox triage: categorize Inbox tasks into existing projects via Claude."""
 
 import json
+import os
 import subprocess
 import sys
 from typing import List, Literal, Optional, Tuple
 
 import anthropic
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
+# Load a local .env (if present) so ANTHROPIC_API_KEY and the settings below can
+# live there instead of the shell/profile. Absent .env is a harmless no-op.
+load_dotenv()
+
 # ----------------------------- configuration -----------------------------
-MODEL = "claude-haiku-4-5"         # Anthropic model id used for classification
-MOVE_MIN_CONFIDENCE = "high"       # minimum confidence required to move a task
-CHUNK_SIZE = 25                    # inbox items sent per classification API call
+# Each setting falls back to the default when not set in .env / the environment.
+# ANTHROPIC_API_KEY is read from the environment by the anthropic SDK directly.
+MODEL = os.environ.get("MODEL", "claude-haiku-4-5")          # classification model id
+MOVE_MIN_CONFIDENCE = os.environ.get("MOVE_MIN_CONFIDENCE", "high")  # min confidence to move
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "25"))         # inbox items per API call
 # --------------------------------------------------------------------------
 
 CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
