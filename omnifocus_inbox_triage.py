@@ -10,8 +10,9 @@ import anthropic
 from pydantic import BaseModel
 
 # ----------------------------- configuration -----------------------------
-MODEL = "claude-opus-4-8"          # Anthropic model id used for classification
+MODEL = "claude-haiku-4-5"         # Anthropic model id used for classification
 MOVE_MIN_CONFIDENCE = "high"       # minimum confidence required to move a task
+CHUNK_SIZE = 25                    # inbox items sent per classification API call
 # --------------------------------------------------------------------------
 
 CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
@@ -56,6 +57,12 @@ def partition_decisions(decisions, item_ids, project_ids,
         else:
             to_leave.append(d)
     return to_move, to_leave
+
+
+def chunk_items(items, size):
+    """Yield successive `size`-length slices of `items`."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
 
 # ------------------------------- read stage -------------------------------
@@ -172,6 +179,14 @@ def classify(items, projects):
     return response.parsed_output
 
 
+def classify_in_batches(items, projects, chunk_size=CHUNK_SIZE):
+    decisions = []
+    for batch in chunk_items(items, chunk_size):
+        result = classify(batch, projects)
+        decisions.extend(result.decisions)
+    return Classification(decisions=decisions)
+
+
 # ------------------------------- apply stage -------------------------------
 
 def build_apply_config(to_move: List[Decision]) -> dict:
@@ -273,7 +288,7 @@ def main():
         print('No inbox tasks to triage.')
         return 0
 
-    classification = classify(items, projects)
+    classification = classify_in_batches(items, projects)
     item_ids = [i["id"] for i in items]
     project_ids = [p["id"] for p in projects]
     to_move, to_leave = partition_decisions(

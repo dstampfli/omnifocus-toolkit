@@ -62,6 +62,9 @@ python omnifocus_inbox_triage.py --apply    # classify, then move high-confidenc
 ```
 
 Tune the constants at the top of the script: `MODEL` (the Anthropic model id;
-`claude-haiku-4-5` is a cheaper alternative for this simple classification) and
+defaults to `claude-haiku-4-5` for this simple classification, with
+`claude-opus-4-8` available as a higher-quality, higher-cost alternative),
 `MOVE_MIN_CONFIDENCE` (`high` by default; set to `medium` to also move
-medium-confidence matches).
+medium-confidence matches), and `CHUNK_SIZE` (inbox items sent per
+classification API call; the script automatically processes large inboxes in
+batches so a single call's output never exceeds the model's token limit).

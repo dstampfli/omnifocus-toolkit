@@ -4,6 +4,7 @@ from omnifocus_inbox_triage import (
     partition_decisions,
     parse_read_result,
     active_projects,
+    chunk_items,
 )
 
 
@@ -134,6 +135,22 @@ def test_format_report_lists_left_behind_items_with_reason():
     assert "Left in Inbox" in out
     assert "Random thought" in out
     assert "about the cat" in out  # the reason text from mk()
+
+
+def test_chunk_items_splits_with_remainder():
+    assert [list(c) for c in chunk_items([1, 2, 3, 4, 5], 2)] == [[1, 2], [3, 4], [5]]
+
+
+def test_chunk_items_exact_multiple():
+    assert [list(c) for c in chunk_items([1, 2, 3, 4], 2)] == [[1, 2], [3, 4]]
+
+
+def test_chunk_items_empty():
+    assert list(chunk_items([], 3)) == []
+
+
+def test_chunk_items_size_larger_than_list():
+    assert [list(c) for c in chunk_items([1, 2], 10)] == [[1, 2]]
 
 
 def test_format_report_failed_move_not_labeled_moved():
