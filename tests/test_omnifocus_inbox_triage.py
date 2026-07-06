@@ -189,17 +189,33 @@ def test_format_report_failed_move_not_labeled_moved():
 
 
 def test_load_config_defaults(monkeypatch):
-    for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE"):
+    for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE",
+              "MAX_ATTACHMENT_BYTES", "MAX_BATCH_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
         monkeypatch.delenv(k, raising=False)
-    model, conf, chunk = _load_config()
-    assert model == "claude-haiku-4-5"
+    model, conf, chunk, max_att, max_batch, max_note = _load_config()
+    assert model == "claude-sonnet-5"
     assert conf == "high"
     assert chunk == 25
+    assert max_att == 10485760
+    assert max_batch == 20971520
+    assert max_note == 4000
+
+
+def test_load_config_rejects_bad_attachment_cap(monkeypatch):
+    monkeypatch.setenv("MAX_ATTACHMENT_BYTES", "lots")
+    with pytest.raises(SystemExit):
+        _load_config()
+
+
+def test_load_config_rejects_non_positive_note_cap(monkeypatch):
+    monkeypatch.setenv("MAX_NOTE_CHARS", "0")
+    with pytest.raises(SystemExit):
+        _load_config()
 
 
 def test_load_config_normalizes_confidence_case(monkeypatch):
     monkeypatch.setenv("MOVE_MIN_CONFIDENCE", "Medium")
-    _, conf, _ = _load_config()
+    _, conf, _, _, _, _ = _load_config()
     assert conf == "medium"
 
 

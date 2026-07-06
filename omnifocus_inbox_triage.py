@@ -23,8 +23,20 @@ CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 # ANTHROPIC_API_KEY is read from the environment by the anthropic SDK directly.
 # Values are validated here so a fat-fingered .env fails with a clear message
 # instead of a raw traceback deep inside the run (or at test collection).
+def _positive_int_env(name, default):
+    raw = os.environ.get(name, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(f"Invalid {name}={raw!r}; expected a positive integer.", file=sys.stderr)
+        raise SystemExit(2)
+    return value
+
+
 def _load_config():
-    model = os.environ.get("MODEL", "claude-haiku-4-5")  # classification model id
+    model = os.environ.get("MODEL", "claude-sonnet-5")  # vision-capable model id
 
     min_conf = os.environ.get("MOVE_MIN_CONFIDENCE", "high").strip().lower()
     if min_conf not in CONFIDENCE_RANK:
@@ -35,22 +47,22 @@ def _load_config():
         )
         raise SystemExit(2)
 
-    raw_chunk = os.environ.get("CHUNK_SIZE", "25")
-    try:
-        chunk = int(raw_chunk)
-    except ValueError:
-        chunk = 0
-    if chunk < 1:
-        print(
-            f"Invalid CHUNK_SIZE={raw_chunk!r}; expected a positive integer.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+    chunk = _positive_int_env("CHUNK_SIZE", "25")               # items per API call
+    max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")     # 10 MiB per attachment
+    max_batch = _positive_int_env("MAX_BATCH_ATTACHMENT_BYTES", "20971520")  # 20 MiB per call
+    max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")      # cleaned-note truncation
 
-    return model, min_conf, chunk
+    return model, min_conf, chunk, max_att, max_batch, max_note
 
 
-MODEL, MOVE_MIN_CONFIDENCE, CHUNK_SIZE = _load_config()
+(
+    MODEL,
+    MOVE_MIN_CONFIDENCE,
+    CHUNK_SIZE,
+    MAX_ATTACHMENT_BYTES,
+    MAX_BATCH_ATTACHMENT_BYTES,
+    MAX_NOTE_CHARS,
+) = _load_config()
 # --------------------------------------------------------------------------
 
 
