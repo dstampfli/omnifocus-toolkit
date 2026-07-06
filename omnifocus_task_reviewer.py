@@ -104,3 +104,54 @@ def read_project_tasks(project_names, review_tag):
     cfg = json.dumps({"projectNames": project_names, "reviewTag": review_tag})
     payload = run_jxa(READ_TASKS_JXA, cfg)
     return payload["tasks"], payload["unresolved"]
+
+
+# ----------------------------- review stage -----------------------------
+
+WEB_FETCH_BETA = "web-fetch-2025-09-10"
+
+
+def build_system_prompt():
+    return (
+        "You enrich a single OmniFocus task so its owner knows what it is "
+        "without opening it. You are given the task's current name, note "
+        "(which may contain a URL), and any image/PDF attachments.\n\n"
+        "Read the note and attachments, and FETCH any URL the task references "
+        "to understand the linked content. Then produce:\n"
+        "- new_title: a concise, specific title (<= ~80 chars). If the current "
+        "name is already clear, you may keep it.\n"
+        "- summary: 1-3 sentences on what this is and why it matters.\n\n"
+        "Base the summary on the actual fetched/attached content, not the URL "
+        "string alone. Do not invent facts you cannot see."
+    )
+
+
+def review_task(task, client):
+    content = build_task_content(
+        task, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
+    )
+    resp = client.beta.messages.parse(
+        model=MODEL,
+        max_tokens=1024,
+        betas=[WEB_FETCH_BETA],
+        tools=[{"type": "web_fetch_20260209", "name": "web_fetch",
+                "max_uses": WEB_FETCH_MAX_USES}],
+        system=build_system_prompt(),
+        messages=[{"role": "user", "content": content}],
+        output_format=Enrichment,
+    )
+    return resp.parsed_output
+
+
+def review_tasks(tasks, review_fn=review_task):
+    client = anthropic.Anthropic()
+    reviewed, failed = [], []
+    for task in tasks:
+        try:
+            enrichment = review_fn(task, client)
+            reviewed.append((task, enrichment))
+        except Exception as e:  # per-task isolation: never abort the whole run
+            print(f"Review failed for {task.get('name', task.get('id'))!r}: {e}",
+                  file=sys.stderr)
+            failed.append((task, str(e)))
+    return reviewed, failed
