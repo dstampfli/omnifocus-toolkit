@@ -55,3 +55,17 @@ Config (`MODEL`, `MOVE_MIN_CONFIDENCE`, `CHUNK_SIZE`, plus the attachment/note c
 - The target OmniOutliner document must be **open** (or `DOC_PATH` set to a `.ooutline` file the script will open) — only relevant to `omnifocus_omnioutliner_sync.py`.
 - First run prompts for Automation permissions (System Settings → Privacy & Security → Automation) for the terminal app — required for `osascript` to control OmniFocus (and OmniOutliner, for the sync script).
 - `omnifocus_inbox_triage.py` additionally requires the `anthropic` and `python-dotenv` packages (installed via `uv sync`) and an Anthropic API key. Provide the key via a local `.env` (copy `.env.example`), an exported `ANTHROPIC_API_KEY`, or an active `ant auth login` profile.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked as local markdown files under `.scratch/<feature>/` (no remote tracker). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
