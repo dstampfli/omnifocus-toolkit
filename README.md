@@ -83,11 +83,17 @@ python omnifocus_inbox_triage.py --apply    # classify, then move high-confidenc
 
 - `ANTHROPIC_API_KEY` — your Anthropic key (read automatically by the SDK). An
   `ant auth login` profile or an exported env var works too.
-- `MODEL` — the classification model id; defaults to `claude-haiku-4-5` for this
-  simple task, with `claude-opus-4-8` available as a higher-quality, higher-cost
-  alternative.
+- `MODEL` — the classification model id; defaults to `claude-sonnet-5`, a
+  vision-capable model needed to read attachment images/PDFs, with
+  `claude-opus-4-8` available as a higher-quality, higher-cost alternative.
 - `MOVE_MIN_CONFIDENCE` — `high` by default; set to `medium` to also move
   medium-confidence matches.
 - `CHUNK_SIZE` — inbox items sent per classification API call; the script
   processes large inboxes in batches so a single call's output never exceeds the
   model's token limit.
+- **Attachment & email enrichment.** PDF and image attachments on an Inbox item
+  are read by the vision model; forwarded-email notes are cleaned of invisible
+  padding. `MAX_ATTACHMENT_BYTES` (default 10 MiB) caps per-attachment size —
+  larger or unsupported attachments are skipped, with their filename kept as a
+  hint. `MAX_BATCH_ATTACHMENT_BYTES` bounds per-call attachment bytes and
+  `MAX_NOTE_CHARS` truncates long notes.

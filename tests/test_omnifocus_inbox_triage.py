@@ -84,7 +84,7 @@ def test_active_projects_filters_non_active():
 
 
 import json as _json
-from omnifocus_inbox_triage import build_system_prompt, build_user_content
+from omnifocus_inbox_triage import build_system_prompt, build_user_message, batch_items_by_size
 
 
 def test_build_system_prompt_mentions_key_rules():
@@ -94,30 +94,56 @@ def test_build_system_prompt_mentions_key_rules():
     assert "description" in prompt
 
 
-def test_build_user_content_embeds_ids_as_json():
-    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
-    projects = [{"id": "p1", "name": "Pets", "folderPath": "Home"}]
-    content = build_user_content(items, projects)
-    parsed = _json.loads(content)
-    assert parsed["inbox_items"][0]["id"] == "t1"
-    assert parsed["projects"][0]["id"] == "p1"
+def _proj(pid="p1", name="Pets", desc="Pet care"):
+    return {"id": pid, "name": name, "folderPath": "", "description": desc}
 
 
-def test_build_user_content_includes_project_description():
-    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
-    projects = [{"id": "p1", "name": "Pets", "folderPath": "Home",
-                 "description": "Pet care: vet, food, grooming"}]
-    parsed = _json.loads(build_user_content(items, projects))
-    assert parsed["projects"][0]["description"] == "Pet care: vet, food, grooming"
-    # the internal status field must not leak to the model
-    assert "status" not in parsed["projects"][0]
+def _mkitem(item_id, attachments=None):
+    return {"id": item_id, "name": "n-" + item_id, "note": "", "attachments": attachments or []}
 
 
-def test_build_user_content_defaults_missing_description_to_empty():
-    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
-    projects = [{"id": "p1", "name": "Pets", "folderPath": "Home"}]
-    parsed = _json.loads(build_user_content(items, projects))
-    assert parsed["projects"][0]["description"] == ""
+def test_build_user_message_projects_block_then_items():
+    items = [_mkitem("t1"), _mkitem("t2")]
+    projects = [_proj()]
+    content = build_user_message(items, projects, lambda tid, i: None, 1000, 4000)
+    assert content[0]["type"] == "text"
+    assert "Pets" in content[0]["text"] and "Pet care" in content[0]["text"]
+    # both item headers present, no status leaked
+    joined = "".join(b.get("text", "") for b in content if b["type"] == "text")
+    assert "id=t1" in joined and "id=t2" in joined
+    assert "status" not in content[0]["text"]
+
+
+def test_build_user_message_includes_vision_block():
+    items = [_mkitem("t1", [{"filename": "a.pdf", "byteLength": 100, "index": 0}])]
+    content = build_user_message(items, [_proj()], lambda tid, i: "B64", 1000, 4000)
+    assert any(b["type"] == "document" for b in content)
+
+
+def test_batch_by_count():
+    items = [_mkitem(f"t{i}") for i in range(5)]
+    batches = [list(b) for b in batch_items_by_size(items, 2, 1000, 10000)]
+    assert [len(b) for b in batches] == [2, 2, 1]
+
+
+def test_batch_flushes_when_attachment_budget_exceeded():
+    items = [
+        _mkitem("t1", [{"filename": "a.pdf", "byteLength": 800, "index": 0}]),
+        _mkitem("t2", [{"filename": "b.pdf", "byteLength": 800, "index": 0}]),
+    ]
+    # budget 1000: t1 (800) fits; adding t2 (800) -> 1600 > 1000 -> flush.
+    batches = [list(b) for b in batch_items_by_size(items, 25, 5000, 1000)]
+    assert [[i["id"] for i in b] for b in batches] == [["t1"], ["t2"]]
+
+
+def test_batch_ignores_out_of_scope_bytes():
+    # over-cap and unsupported attachments contribute 0 to the batch budget.
+    items = [
+        _mkitem("t1", [{"filename": "big.pdf", "byteLength": 9_000_000, "index": 0}]),
+        _mkitem("t2", [{"filename": "x.zip", "byteLength": 9_000_000, "index": 0}]),
+    ]
+    batches = [list(b) for b in batch_items_by_size(items, 25, 1_000_000, 2_000_000)]
+    assert len(batches) == 1 and len(batches[0]) == 2
 
 
 from omnifocus_inbox_triage import build_apply_config
@@ -189,17 +215,33 @@ def test_format_report_failed_move_not_labeled_moved():
 
 
 def test_load_config_defaults(monkeypatch):
-    for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE"):
+    for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE",
+              "MAX_ATTACHMENT_BYTES", "MAX_BATCH_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
         monkeypatch.delenv(k, raising=False)
-    model, conf, chunk = _load_config()
-    assert model == "claude-haiku-4-5"
+    model, conf, chunk, max_att, max_batch, max_note = _load_config()
+    assert model == "claude-sonnet-5"
     assert conf == "high"
     assert chunk == 25
+    assert max_att == 10485760
+    assert max_batch == 20971520
+    assert max_note == 4000
+
+
+def test_load_config_rejects_bad_attachment_cap(monkeypatch):
+    monkeypatch.setenv("MAX_ATTACHMENT_BYTES", "lots")
+    with pytest.raises(SystemExit):
+        _load_config()
+
+
+def test_load_config_rejects_non_positive_note_cap(monkeypatch):
+    monkeypatch.setenv("MAX_NOTE_CHARS", "0")
+    with pytest.raises(SystemExit):
+        _load_config()
 
 
 def test_load_config_normalizes_confidence_case(monkeypatch):
     monkeypatch.setenv("MOVE_MIN_CONFIDENCE", "Medium")
-    _, conf, _ = _load_config()
+    _, conf, _, _, _, _ = _load_config()
     assert conf == "medium"
 
 

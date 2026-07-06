@@ -11,6 +11,8 @@ import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
+from omnifocus_common import build_task_content, fetch_attachment_b64, media_type_for
+
 # Load a local .env (if present) so ANTHROPIC_API_KEY and the settings below can
 # live there instead of the shell/profile. Absent .env is a harmless no-op.
 load_dotenv()
@@ -23,8 +25,20 @@ CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 # ANTHROPIC_API_KEY is read from the environment by the anthropic SDK directly.
 # Values are validated here so a fat-fingered .env fails with a clear message
 # instead of a raw traceback deep inside the run (or at test collection).
+def _positive_int_env(name, default):
+    raw = os.environ.get(name, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(f"Invalid {name}={raw!r}; expected a positive integer.", file=sys.stderr)
+        raise SystemExit(2)
+    return value
+
+
 def _load_config():
-    model = os.environ.get("MODEL", "claude-haiku-4-5")  # classification model id
+    model = os.environ.get("MODEL", "claude-sonnet-5")  # vision-capable model id
 
     min_conf = os.environ.get("MOVE_MIN_CONFIDENCE", "high").strip().lower()
     if min_conf not in CONFIDENCE_RANK:
@@ -35,22 +49,22 @@ def _load_config():
         )
         raise SystemExit(2)
 
-    raw_chunk = os.environ.get("CHUNK_SIZE", "25")
-    try:
-        chunk = int(raw_chunk)
-    except ValueError:
-        chunk = 0
-    if chunk < 1:
-        print(
-            f"Invalid CHUNK_SIZE={raw_chunk!r}; expected a positive integer.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+    chunk = _positive_int_env("CHUNK_SIZE", "25")               # items per API call
+    max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")     # 10 MiB per attachment
+    max_batch = _positive_int_env("MAX_BATCH_ATTACHMENT_BYTES", "20971520")  # 20 MiB per call
+    max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")      # cleaned-note truncation
 
-    return model, min_conf, chunk
+    return model, min_conf, chunk, max_att, max_batch, max_note
 
 
-MODEL, MOVE_MIN_CONFIDENCE, CHUNK_SIZE = _load_config()
+(
+    MODEL,
+    MOVE_MIN_CONFIDENCE,
+    CHUNK_SIZE,
+    MAX_ATTACHMENT_BYTES,
+    MAX_BATCH_ATTACHMENT_BYTES,
+    MAX_NOTE_CHARS,
+) = _load_config()
 # --------------------------------------------------------------------------
 
 
@@ -121,6 +135,30 @@ function run() {
     of.includeStandardAdditions = true;
     const ofDoc = of.defaultDocument;
 
+    // Attachments are only reachable via OmniJS; fetch metadata (no bytes) for
+    // all inbox items keyed by task id, then merge onto each item below.
+    let attMap = {};
+    try {
+        const metaScript =
+            "(() => {" +
+            "  const map = {};" +
+            "  inbox.forEach(t => {" +
+            "    if (!t) return;" +
+            "    let atts = [];" +
+            "    try { atts = t.attachments || []; } catch (e) { atts = []; }" +
+            "    if (!atts.length) return;" +
+            "    map[t.id.primaryKey] = atts.map((a, idx) => {" +
+            "      let fn = '', len = -1;" +
+            "      try { fn = a.filename || a.preferredFilename || ''; } catch (e) {}" +
+            "      try { len = a.contents ? a.contents.length : -1; } catch (e) {}" +
+            "      return { filename: fn, byteLength: len, index: idx };" +
+            "    });" +
+            "  });" +
+            "  return JSON.stringify(map);" +
+            "})()";
+        attMap = JSON.parse(of.evaluateJavascript(metaScript));
+    } catch (e) { attMap = {}; }
+
     const items = [];
     const inbox = ofDoc.inboxTasks();
     for (let i = 0; i < inbox.length; i++) {
@@ -132,7 +170,8 @@ function run() {
         if (done) continue;
         let note = '';
         try { note = t.note() || ''; } catch (e) {}
-        items.push({ id: t.id(), name: t.name(), note: note });
+        const tid = t.id();
+        items.push({ id: tid, name: t.name(), note: note, attachments: attMap[tid] || [] });
     }
 
     const projects = [];
@@ -190,8 +229,12 @@ def build_system_prompt():
     return (
         "You triage a GTD inbox. You are given a list of the user's existing "
         "OmniFocus projects (each with an id, name, folder path, and a "
-        "description of what belongs in it) and a list of inbox items (each with "
-        "an id, name, and note).\n\n"
+        "description of what belongs in it) "
+        "and a list of inbox items. Each inbox item is presented as a text "
+        "header (its id, name, cleaned note, and a list of any attachment "
+        "filenames) optionally followed by the attachment images or PDF "
+        "documents themselves — read those attachments as part of judging the "
+        "item.\n\n"
         "Rely on each project's description to decide what belongs there; it is "
         "the user's own statement of the project's scope and takes precedence "
         "over the project name. When a project's description is empty, fall back "
@@ -209,9 +252,10 @@ def build_system_prompt():
     )
 
 
-def build_user_content(items, projects):
-    # Send the model only the fields it needs to decide: the internal `status`
-    # is filtered out, and each project's note is surfaced as `description`.
+def build_user_message(items, projects, fetch_bytes, max_bytes, max_note_chars):
+    # The model message is an ordered list of content blocks: a leading text
+    # block with the project taxonomy (internal `status` filtered out), then each
+    # item's blocks (text header + any attachment vision blocks).
     slim_projects = [
         {
             "id": p["id"],
@@ -221,23 +265,48 @@ def build_user_content(items, projects):
         }
         for p in projects
     ]
-    slim_items = [
-        {"id": i["id"], "name": i["name"], "note": i.get("note", "")}
-        for i in items
-    ]
-    return json.dumps(
-        {"projects": slim_projects, "inbox_items": slim_items}, ensure_ascii=False
-    )
+    content = [{
+        "type": "text",
+        "text": "PROJECTS:\n" + json.dumps({"projects": slim_projects}, ensure_ascii=False),
+    }]
+    for item in items:
+        content.extend(build_task_content(item, fetch_bytes, max_bytes, max_note_chars))
+    return content
+
+
+def batch_items_by_size(items, chunk_size, max_bytes, max_batch_bytes):
+    """Yield lists of items, flushing when a batch reaches chunk_size items or
+    when adding an item's in-scope attachment bytes (supported type and within
+    max_bytes) would exceed max_batch_bytes. Item order is preserved."""
+    batch = []
+    batch_bytes = 0
+    for item in items:
+        item_bytes = sum(
+            att.get("byteLength", 0)
+            for att in item.get("attachments", [])
+            if media_type_for(att.get("filename", ""))
+            and 0 <= att.get("byteLength", -1) <= max_bytes
+        )
+        if batch and (len(batch) >= chunk_size or batch_bytes + item_bytes > max_batch_bytes):
+            yield batch
+            batch, batch_bytes = [], 0
+        batch.append(item)
+        batch_bytes += item_bytes
+    if batch:
+        yield batch
 
 
 def classify(items, projects):
     client = anthropic.Anthropic()
+    content = build_user_message(
+        items, projects, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
+    )
     try:
         response = client.messages.parse(
             model=MODEL,
             max_tokens=8192,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": build_user_content(items, projects)}],
+            messages=[{"role": "user", "content": content}],
             output_format=Classification,
         )
     except anthropic.APIError as e:
@@ -250,7 +319,9 @@ def classify(items, projects):
 
 def classify_in_batches(items, projects, chunk_size=CHUNK_SIZE):
     decisions = []
-    for batch in chunk_items(items, chunk_size):
+    for batch in batch_items_by_size(
+        items, chunk_size, MAX_ATTACHMENT_BYTES, MAX_BATCH_ATTACHMENT_BYTES
+    ):
         result = classify(batch, projects)
         decisions.extend(result.decisions)
     return Classification(decisions=decisions)
