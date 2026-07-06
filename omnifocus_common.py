@@ -7,7 +7,10 @@ bridge. Pure helpers here have no OmniFocus dependency and are unit-tested; the
 osascript/OmniJS I/O (run_jxa, fetch_attachment_b64) is added in a later task.
 """
 
+import json
 import re
+import subprocess
+import sys
 from typing import Optional
 
 # Invisible/padding codepoints that marketing emails scatter through their text
@@ -92,3 +95,54 @@ def build_task_content(item, fetch_bytes, max_bytes, max_note_chars=4000):
         header += f"\n[attachments: {', '.join(hints)}]"
 
     return [{"type": "text", "text": header}] + vision_blocks
+
+
+def run_jxa(script, *args):
+    """Run a JXA program via osascript and return its JSON stdout as a dict.
+    Exits with a clear message on a nonzero return or non-JSON output."""
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", script, *args],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("osascript failed:", file=sys.stderr)
+        print(result.stderr.strip(), file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        return json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        print("osascript returned unexpected output:", file=sys.stderr)
+        print(result.stdout.strip(), file=sys.stderr)
+        raise SystemExit(1)
+
+
+# Extract ONE attachment's bytes via the OmniJS bridge (plain JXA cannot read
+# attachments). Only the task id — a whitelisted OmniFocus identifier — is
+# embedded into the OmniJS source; never free text.
+FETCH_ATTACHMENT_JXA = r"""
+function run(argv) {
+    const of = Application('OmniFocus');
+    const taskId = argv[0];
+    const index = parseInt(argv[1], 10);
+    const omni =
+        "(() => {" +
+        "  const id = " + JSON.stringify(taskId) + ";" +
+        "  let t = flattenedTasks.find(x => x && x.id.primaryKey === id);" +
+        "  if (!t) t = inbox.find(x => x && x.id.primaryKey === id);" +
+        "  if (!t) return JSON.stringify({ error: 'no task' });" +
+        "  const atts = t.attachments || [];" +
+        "  const a = atts[" + index + "];" +
+        "  if (!a) return JSON.stringify({ error: 'no attachment' });" +
+        "  try { return JSON.stringify({ data: a.contents.toBase64() }); }" +
+        "  catch (e) { return JSON.stringify({ error: String(e) }); }" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+"""
+
+
+def fetch_attachment_b64(task_id, index):
+    """Return the base64 bytes of one attachment, or None if it cannot be read."""
+    result = run_jxa(FETCH_ATTACHMENT_JXA, task_id, str(index))
+    return result.get("data")
