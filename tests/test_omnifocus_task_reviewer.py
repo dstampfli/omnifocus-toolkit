@@ -103,8 +103,8 @@ def test_build_write_config_appends_summary_preserving_note():
 def test_build_write_config_strips_line_separators():
     # U+2028 / U+2029 in model text must not survive into the write payload.
     task = {"id": "t1", "name": "old", "note": "", "attachments": []}
-    reviewed = [(task, Enrichment(new_title="a b", summary="c d"))]
+    reviewed = [(task, Enrichment(new_title="a\u2028b", summary="c\u2029d"))]
     cfg = build_write_config(reviewed, "reviewed")
     w = cfg["writes"][0]
-    assert " " not in w["newTitle"] and w["newTitle"] == "ab"
-    assert " " not in w["note"] and "cd" in w["note"]
+    assert "\u2028" not in w["newTitle"] and w["newTitle"] == "ab"
+    assert "\u2029" not in w["note"] and "cd" in w["note"]
