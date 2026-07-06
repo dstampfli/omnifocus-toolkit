@@ -47,3 +47,54 @@ def test_attachment_block_image_is_image():
     b = attachment_block("image/png", "QkFTRTY0")
     assert b == {"type": "image", "source": {
         "type": "base64", "media_type": "image/png", "data": "QkFTRTY0"}}
+
+
+from omnifocus_common import build_task_content
+
+
+def _item(attachments=None, note=""):
+    return {"id": "t1", "name": "Sample Task", "note": note, "attachments": attachments or []}
+
+
+def test_build_task_content_no_attachments_single_text_block():
+    blocks = build_task_content(_item(note="hello"), lambda tid, i: None, 1000)
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert "id=t1" in blocks[0]["text"] and "Sample Task" in blocks[0]["text"]
+    assert "hello" in blocks[0]["text"]
+
+
+def test_build_task_content_includes_pdf_vision_block():
+    item = _item(attachments=[{"filename": "Day_1_v3.pdf", "byteLength": 500, "index": 0}])
+    blocks = build_task_content(item, lambda tid, i: "QkFTRTY0", 1000)
+    assert len(blocks) == 2
+    assert blocks[0]["type"] == "text"
+    assert "Day_1_v3.pdf" in blocks[0]["text"]
+    assert blocks[1] == {"type": "document", "source": {
+        "type": "base64", "media_type": "application/pdf", "data": "QkFTRTY0"}}
+
+
+def test_build_task_content_skips_over_cap_attachment_with_hint():
+    item = _item(attachments=[{"filename": "big.pdf", "byteLength": 9_000_000, "index": 0}])
+    blocks = build_task_content(item, lambda tid, i: "SHOULD_NOT_BE_CALLED", 1_000_000)
+    assert len(blocks) == 1  # text only, no vision block
+    assert "over size cap" in blocks[0]["text"]
+
+
+def test_build_task_content_skips_unsupported_type_with_hint():
+    item = _item(attachments=[{"filename": "report.docx", "byteLength": 10, "index": 0}])
+    blocks = build_task_content(item, lambda tid, i: "X", 1000)
+    assert len(blocks) == 1
+    assert "unsupported" in blocks[0]["text"]
+
+
+def test_build_task_content_skips_unreadable_attachment_with_hint():
+    item = _item(attachments=[{"filename": "a.png", "byteLength": 10, "index": 0}])
+    blocks = build_task_content(item, lambda tid, i: None, 1000)  # fetch fails
+    assert len(blocks) == 1
+    assert "unreadable" in blocks[0]["text"]
+
+
+def test_build_task_content_cleans_note():
+    blocks = build_task_content(_item(note="ready͏͏ now"), lambda tid, i: None, 1000)
+    assert "ready now" in blocks[0]["text"]

@@ -58,3 +58,37 @@ def attachment_block(media_type: str, data_b64: str) -> dict:
         "type": kind,
         "source": {"type": "base64", "media_type": media_type, "data": data_b64},
     }
+
+
+def build_task_content(item, fetch_bytes, max_bytes, max_note_chars=4000):
+    """Return the ordered content-block list for one task: a text header plus a
+    vision block per in-scope attachment. Skipped attachments (unsupported type,
+    over the size cap, or unreadable) still appear in the text header's hint list
+    so the model knows something existed. fetch_bytes is injected for testing."""
+    hints = []
+    vision_blocks = []
+    for att in item.get("attachments", []):
+        filename = att.get("filename", "")
+        byte_len = att.get("byteLength", -1)
+        media_type = media_type_for(filename)
+        if media_type is None:
+            hints.append(f"{filename} (unsupported type, not shown)")
+            continue
+        if byte_len > max_bytes:
+            hints.append(f"{filename} ({byte_len} bytes, omitted: over size cap)")
+            continue
+        data_b64 = fetch_bytes(item["id"], att.get("index"))
+        if not data_b64:
+            hints.append(f"{filename} (unreadable, not shown)")
+            continue
+        hints.append(filename)
+        vision_blocks.append(attachment_block(media_type, data_b64))
+
+    header = f"=== ITEM id={item['id']} ===\n{item.get('name', '')}"
+    note = clean_note(item.get("note", ""), max_note_chars)
+    if note:
+        header += f"\n{note}"
+    if hints:
+        header += f"\n[attachments: {', '.join(hints)}]"
+
+    return [{"type": "text", "text": header}] + vision_blocks
