@@ -97,3 +97,22 @@ python omnifocus_inbox_triage.py --apply    # classify, then move high-confidenc
   larger or unsupported attachments are skipped, with their filename kept as a
   hint. `MAX_BATCH_ATTACHMENT_BYTES` bounds per-call attachment bytes and
   `MAX_NOTE_CHARS` truncates long notes.
+
+## Task reviewer (`omnifocus_task_reviewer.py`)
+
+Reviews not-yet-reviewed tasks in the named OmniFocus project(s) and enriches
+each in place: it fetches any URL the task references (via the model's web_fetch)
+and reads its attachments, then sets a clearer title and appends a `--- Summary
+---` section to the note. Reviewed tasks are marked with a tag (default
+`reviewed`) so re-runs skip them. Non-destructive: the original note, URL, and
+attachments are preserved.
+
+```bash
+python omnifocus_task_reviewer.py "Training"            # dry-run: show proposed enrichments
+python omnifocus_task_reviewer.py "Training" "Tech"     # multiple projects
+python omnifocus_task_reviewer.py "Training" --apply    # write: rename, append summary, tag reviewed
+```
+
+Uses the same `.env` and Anthropic key as the triage tool, plus `REVIEW_TAG` and
+`WEB_FETCH_MAX_USES`. Requires a web_fetch-capable model (the `claude-sonnet-5`
+default).
