@@ -11,7 +11,7 @@ import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from omnifocus_common import build_task_content, fetch_attachment_b64, media_type_for
+from omnifocus_common import build_task_content, fetch_attachment_b64, media_type_for, _positive_int_env
 
 # Load a local .env (if present) so ANTHROPIC_API_KEY and the settings below can
 # live there instead of the shell/profile. Absent .env is a harmless no-op.
@@ -25,17 +25,6 @@ CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 # ANTHROPIC_API_KEY is read from the environment by the anthropic SDK directly.
 # Values are validated here so a fat-fingered .env fails with a clear message
 # instead of a raw traceback deep inside the run (or at test collection).
-def _positive_int_env(name, default):
-    raw = os.environ.get(name, default)
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
-    if value < 1:
-        print(f"Invalid {name}={raw!r}; expected a positive integer.", file=sys.stderr)
-        raise SystemExit(2)
-    return value
-
 
 def _load_config():
     model = os.environ.get("MODEL", "claude-sonnet-5")  # vision-capable model id

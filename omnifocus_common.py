@@ -9,6 +9,7 @@ not unit-tested.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -127,6 +128,19 @@ def run_jxa(script, *args):
         print("osascript returned unexpected output:", file=sys.stderr)
         print(result.stdout.strip(), file=sys.stderr)
         raise SystemExit(1)
+
+
+def _positive_int_env(name, default):
+    """Read a positive-int env var, exiting cleanly on a bad value."""
+    raw = os.environ.get(name, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(f"Invalid {name}={raw!r}; expected a positive integer.", file=sys.stderr)
+        raise SystemExit(2)
+    return value
 
 
 # Extract ONE attachment's bytes via the OmniJS bridge (plain JXA cannot read

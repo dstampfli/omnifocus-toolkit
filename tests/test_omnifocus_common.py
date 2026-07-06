@@ -109,3 +109,30 @@ def test_build_task_content_skips_unreadable_attachment_with_hint():
 def test_build_task_content_cleans_note():
     blocks = build_task_content(_item(note="ready͏͏ now"), lambda tid, i: None, 1000)
     assert "ready now" in blocks[0]["text"]
+
+
+import os
+import pytest
+from omnifocus_common import _positive_int_env
+
+
+def test_positive_int_env_reads_value(monkeypatch):
+    monkeypatch.setenv("WIDGET_COUNT", "7")
+    assert _positive_int_env("WIDGET_COUNT", "3") == 7
+
+
+def test_positive_int_env_uses_default(monkeypatch):
+    monkeypatch.delenv("WIDGET_COUNT", raising=False)
+    assert _positive_int_env("WIDGET_COUNT", "3") == 3
+
+
+def test_positive_int_env_rejects_non_numeric(monkeypatch):
+    monkeypatch.setenv("WIDGET_COUNT", "lots")
+    with pytest.raises(SystemExit):
+        _positive_int_env("WIDGET_COUNT", "3")
+
+
+def test_positive_int_env_rejects_non_positive(monkeypatch):
+    monkeypatch.setenv("WIDGET_COUNT", "0")
+    with pytest.raises(SystemExit):
+        _positive_int_env("WIDGET_COUNT", "3")
