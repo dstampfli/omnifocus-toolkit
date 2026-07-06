@@ -155,3 +155,100 @@ def review_tasks(tasks, review_fn=review_task):
                   file=sys.stderr)
             failed.append((task, str(e)))
     return reviewed, failed
+
+
+# ------------------------------- apply stage -------------------------------
+
+import re  # noqa: E402
+
+# Strip line/paragraph separators and C0/C1 control chars (except \n and \t)
+# from model text before it is written back. Defence in depth: the title/note
+# go through JXA argv (already injection-safe), but this keeps the note clean.
+_UNSAFE = re.compile(r"[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]")
+
+
+def _sanitize(text):
+    return _UNSAFE.sub("", text or "")
+
+
+def build_write_config(reviewed, review_tag):
+    writes = []
+    for task, enrichment in reviewed:
+        title = _sanitize(enrichment.new_title).strip()
+        summary = _sanitize(enrichment.summary).strip()
+        original = task.get("note", "")
+        note = f"{original}\n\n--- Summary ---\n{summary}" if original else f"--- Summary ---\n{summary}"
+        writes.append({"taskId": task["id"], "newTitle": title, "note": note})
+    return {"writes": writes, "reviewTag": review_tag}
+
+
+# Plain JXA sets name/note from argv (injection-safe for arbitrary text); the
+# OmniJS bridge then adds the review tag, embedding ONLY task ids + the tag name.
+WRITE_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const doc = of.defaultDocument;
+
+    const byId = {};
+    cfg.writes.forEach(w => { byId[w.taskId] = w; });
+
+    const done = {};
+    const failed = [];
+    const all = doc.flattenedTasks();
+    for (let i = 0; i < all.length; i++) {
+        const t = all[i];
+        let id;
+        try { id = t.id(); } catch (e) { continue; }
+        const w = byId[id];
+        if (!w) continue;
+        try {
+            t.name = w.newTitle;
+            t.note = w.note;
+            done[id] = true;
+        } catch (e) { failed.push(id); }
+    }
+
+    let applied = [];
+    const ids = Object.keys(done);
+    if (ids.length) {
+        const tagRes = of.evaluateJavascript(
+            "(() => {" +
+            "  const ids = " + JSON.stringify(ids) + ";" +
+            "  const name = " + JSON.stringify(cfg.reviewTag) + ";" +
+            "  let tag = flattenedTags.byName(name) || new Tag(name);" +
+            "  const ok = [];" +
+            "  ids.forEach(id => { const t = Task.byIdentifier(id); if (t) { t.addTag(tag); ok.push(t.name); } });" +
+            "  return JSON.stringify(ok);" +
+            "})()"
+        );
+        applied = JSON.parse(tagRes);
+    }
+
+    cfg.writes.forEach(w => {
+        if (!done[w.taskId] && failed.indexOf(w.taskId) === -1) failed.push(w.taskId);
+    });
+
+    return JSON.stringify({ applied: applied, failed: failed });
+}
+"""
+
+
+def apply_enrichments(reviewed, review_tag):
+    cfg = json.dumps(build_write_config(reviewed, review_tag))
+    result = subprocess.run(
+        ["osascript", "-l", "JavaScript", "-e", WRITE_JXA, cfg],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("osascript (apply) failed:", file=sys.stderr)
+        print(result.stderr.strip(), file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        print("osascript (apply) returned unexpected output:", file=sys.stderr)
+        print(result.stdout.strip(), file=sys.stderr)
+        raise SystemExit(1)
+    return payload.get("applied", []), payload.get("failed", [])

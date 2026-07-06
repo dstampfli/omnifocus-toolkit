@@ -82,3 +82,15 @@ def test_review_tasks_isolates_per_task_failures():
     assert [t["id"] for t, _ in reviewed] == ["t1", "t3"]
     assert [t["id"] for t, _ in failed] == ["t2"]
     assert reviewed[0][1].new_title == "ONE"
+
+
+from omnifocus_task_reviewer import build_write_config
+
+
+def test_build_write_config_appends_summary_preserving_note():
+    task = {"id": "t1", "name": "old", "note": "original http://x", "attachments": []}
+    reviewed = [(task, Enrichment(new_title="a\u2028b", summary="c\u2029d"))]
+    cfg = build_write_config(reviewed, "reviewed")
+    w = cfg["writes"][0]
+    assert "\u2028" not in w["newTitle"] and w["newTitle"] == "ab"
+    assert "\u2029" not in w["note"] and "cd" in w["note"]
