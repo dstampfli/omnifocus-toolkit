@@ -50,3 +50,57 @@ def parse_args(argv) -> Tuple[List[str], bool]:
     apply = "--apply" in argv
     projects = [a for a in argv if a != "--apply"]
     return projects, apply
+
+
+# ------------------------------- read stage -------------------------------
+
+def parse_read_result(stdout: str) -> Tuple[list, list]:
+    payload = json.loads(stdout)
+    return payload["tasks"], payload["unresolved"]
+
+
+# Reads incomplete, non-dropped, not-yet-reviewed tasks in the named projects,
+# with attachment metadata, entirely in OmniJS (attachments + tags need it).
+# argv[0] = JSON {projectNames: [...], reviewTag: "..."}.
+READ_TASKS_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const namesJson = JSON.stringify(cfg.projectNames);
+    const tagJson = JSON.stringify(cfg.reviewTag);
+    const omni =
+        "(() => {" +
+        "  const wanted = " + namesJson + ";" +
+        "  const reviewTag = " + tagJson + ";" +
+        "  const unresolved = [];" +
+        "  const tasksOut = [];" +
+        "  wanted.forEach(nm => {" +
+        "    const proj = flattenedProjects.find(p => p && p.name === nm && p.status === Project.Status.Active);" +
+        "    if (!proj) { unresolved.push(nm); return; }" +
+        "    proj.flattenedTasks.forEach(t => {" +
+        "      if (!t) return;" +
+        "      if (t.completed || t.taskStatus === Task.Status.Dropped) return;" +
+        "      const tags = (t.tags || []).map(x => x.name);" +
+        "      if (tags.indexOf(reviewTag) !== -1) return;" +
+        "      let atts = [];" +
+        "      try { atts = t.attachments || []; } catch (e) { atts = []; }" +
+        "      const meta = atts.map((a, idx) => {" +
+        "        let fn = '', len = -1;" +
+        "        try { fn = a.filename || a.preferredFilename || ''; } catch (e) {}" +
+        "        try { len = a.contents ? a.contents.length : -1; } catch (e) {}" +
+        "        return { filename: fn, byteLength: len, index: idx };" +
+        "      });" +
+        "      tasksOut.push({ id: t.id.primaryKey, name: t.name, note: t.note || '', attachments: meta });" +
+        "    });" +
+        "  });" +
+        "  return JSON.stringify({ tasks: tasksOut, unresolved: unresolved });" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+"""
+
+
+def read_project_tasks(project_names, review_tag):
+    cfg = json.dumps({"projectNames": project_names, "reviewTag": review_tag})
+    payload = run_jxa(READ_TASKS_JXA, cfg)
+    return payload["tasks"], payload["unresolved"]

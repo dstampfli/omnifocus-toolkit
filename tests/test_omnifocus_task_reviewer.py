@@ -41,3 +41,18 @@ def test_load_config_rejects_bad_fetch_uses(monkeypatch):
     monkeypatch.setenv("WEB_FETCH_MAX_USES", "none")
     with pytest.raises(SystemExit):
         _load_config()
+
+
+from omnifocus_task_reviewer import parse_read_result
+
+
+def test_parse_read_result_splits_tasks_and_unresolved():
+    stdout = (
+        '{"tasks": [{"id": "t1", "name": "A story", "note": "http://x",'
+        ' "attachments": [{"filename": "a.jpg", "byteLength": 10, "index": 0}]}],'
+        ' "unresolved": ["Nope"]}'
+    )
+    tasks, unresolved = parse_read_result(stdout)
+    assert tasks[0]["id"] == "t1"
+    assert tasks[0]["attachments"][0]["filename"] == "a.jpg"
+    assert unresolved == ["Nope"]
