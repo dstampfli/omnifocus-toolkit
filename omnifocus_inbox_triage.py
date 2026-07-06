@@ -11,6 +11,8 @@ import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
+from omnifocus_common import build_task_content, fetch_attachment_b64, media_type_for
+
 # Load a local .env (if present) so ANTHROPIC_API_KEY and the settings below can
 # live there instead of the shell/profile. Absent .env is a harmless no-op.
 load_dotenv()
@@ -202,8 +204,12 @@ def build_system_prompt():
     return (
         "You triage a GTD inbox. You are given a list of the user's existing "
         "OmniFocus projects (each with an id, name, folder path, and a "
-        "description of what belongs in it) and a list of inbox items (each with "
-        "an id, name, and note).\n\n"
+        "description of what belongs in it) "
+        "and a list of inbox items. Each inbox item is presented as a text "
+        "header (its id, name, cleaned note, and a list of any attachment "
+        "filenames) optionally followed by the attachment images or PDF "
+        "documents themselves — read those attachments as part of judging the "
+        "item.\n\n"
         "Rely on each project's description to decide what belongs there; it is "
         "the user's own statement of the project's scope and takes precedence "
         "over the project name. When a project's description is empty, fall back "
@@ -221,9 +227,10 @@ def build_system_prompt():
     )
 
 
-def build_user_content(items, projects):
-    # Send the model only the fields it needs to decide: the internal `status`
-    # is filtered out, and each project's note is surfaced as `description`.
+def build_user_message(items, projects, fetch_bytes, max_bytes, max_note_chars):
+    # The model message is an ordered list of content blocks: a leading text
+    # block with the project taxonomy (internal `status` filtered out), then each
+    # item's blocks (text header + any attachment vision blocks).
     slim_projects = [
         {
             "id": p["id"],
@@ -233,13 +240,35 @@ def build_user_content(items, projects):
         }
         for p in projects
     ]
-    slim_items = [
-        {"id": i["id"], "name": i["name"], "note": i.get("note", "")}
-        for i in items
-    ]
-    return json.dumps(
-        {"projects": slim_projects, "inbox_items": slim_items}, ensure_ascii=False
-    )
+    content = [{
+        "type": "text",
+        "text": "PROJECTS:\n" + json.dumps({"projects": slim_projects}, ensure_ascii=False),
+    }]
+    for item in items:
+        content.extend(build_task_content(item, fetch_bytes, max_bytes, max_note_chars))
+    return content
+
+
+def batch_items_by_size(items, chunk_size, max_bytes, max_batch_bytes):
+    """Yield lists of items, flushing when a batch reaches chunk_size items or
+    when adding an item's in-scope attachment bytes (supported type and within
+    max_bytes) would exceed max_batch_bytes. Item order is preserved."""
+    batch = []
+    batch_bytes = 0
+    for item in items:
+        item_bytes = sum(
+            att.get("byteLength", 0)
+            for att in item.get("attachments", [])
+            if media_type_for(att.get("filename", ""))
+            and 0 <= att.get("byteLength", -1) <= max_bytes
+        )
+        if batch and (len(batch) >= chunk_size or batch_bytes + item_bytes > max_batch_bytes):
+            yield batch
+            batch, batch_bytes = [], 0
+        batch.append(item)
+        batch_bytes += item_bytes
+    if batch:
+        yield batch
 
 
 def classify(items, projects):
