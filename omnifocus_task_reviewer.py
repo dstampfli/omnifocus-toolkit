@@ -9,7 +9,7 @@ title and append a summary to the note. Dry-run by default; --apply writes.
 import json
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import anthropic
 from dotenv import load_dotenv
@@ -144,6 +144,8 @@ def review_task(task, client):
 
 
 def review_tasks(tasks, review_fn=review_task):
+    if not tasks:
+        return [], []
     client = anthropic.Anthropic()
     reviewed, failed = [], []
     for task in tasks:
