@@ -1,4 +1,9 @@
-from omnifocus_common import clean_note, media_type_for, attachment_block
+from omnifocus_common import (
+    clean_note,
+    media_type_for,
+    attachment_block,
+    build_task_content,
+)
 
 
 def test_clean_note_strips_invisible_padding():
@@ -49,9 +54,6 @@ def test_attachment_block_image_is_image():
         "type": "base64", "media_type": "image/png", "data": "QkFTRTY0"}}
 
 
-from omnifocus_common import build_task_content
-
-
 def _item(attachments=None, note=""):
     return {"id": "t1", "name": "Sample Task", "note": note, "attachments": attachments or []}
 
@@ -86,6 +88,15 @@ def test_build_task_content_skips_unsupported_type_with_hint():
     blocks = build_task_content(item, lambda tid, i: "X", 1000)
     assert len(blocks) == 1
     assert "unsupported" in blocks[0]["text"]
+
+
+def test_build_task_content_skips_unknown_size_without_fetch():
+    # byteLength -1 (metadata read failed) is skipped before fetch is attempted,
+    # matching batch_items_by_size which counts it as out-of-scope (0 bytes).
+    item = _item(attachments=[{"filename": "a.pdf", "byteLength": -1, "index": 0}])
+    blocks = build_task_content(item, lambda tid, i: "SHOULD_NOT_BE_CALLED", 1000)
+    assert len(blocks) == 1
+    assert "unreadable" in blocks[0]["text"]
 
 
 def test_build_task_content_skips_unreadable_attachment_with_hint():

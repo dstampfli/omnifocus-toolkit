@@ -4,20 +4,21 @@
 Turns an OmniFocus task into model-ready content: cleaned note text plus vision
 content blocks (PDF/image) extracted from the task's attachments via the OmniJS
 bridge. Pure helpers here have no OmniFocus dependency and are unit-tested; the
-osascript/OmniJS I/O (run_jxa, fetch_attachment_b64) is added in a later task.
+osascript/OmniJS I/O (run_jxa, fetch_attachment_b64) is the I/O boundary and is
+not unit-tested.
 """
 
 import json
 import re
 import subprocess
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 # Invisible/padding codepoints that marketing emails scatter through their text
 # (soft hyphen, combining grapheme joiner, zero-width spaces/joiners, line/para
 # separators, word joiner, BOM). Stripped so they don't dilute the note.
 _INVISIBLE = re.compile(
-    "[­͏​‌‍‎‏  ⁠﻿]"
+    "[\u00ad\u034f\u200b\u200c\u200d\u200e\u200f\u2028\u2029\u2060\ufeff]"
 )
 
 _MEDIA_TYPES = {
@@ -63,11 +64,17 @@ def attachment_block(media_type: str, data_b64: str) -> dict:
     }
 
 
-def build_task_content(item, fetch_bytes, max_bytes, max_note_chars=4000):
+def build_task_content(
+    item: dict,
+    fetch_bytes: Callable[[str, int], Optional[str]],
+    max_bytes: int,
+    max_note_chars: int = 4000,
+) -> list:
     """Return the ordered content-block list for one task: a text header plus a
     vision block per in-scope attachment. Skipped attachments (unsupported type,
-    over the size cap, or unreadable) still appear in the text header's hint list
-    so the model knows something existed. fetch_bytes is injected for testing."""
+    unknown/negative size, over the size cap, or unreadable) still appear in the
+    text header's hint list so the model knows something existed. fetch_bytes is
+    injected for testing."""
     hints = []
     vision_blocks = []
     for att in item.get("attachments", []):
@@ -76,6 +83,11 @@ def build_task_content(item, fetch_bytes, max_bytes, max_note_chars=4000):
         media_type = media_type_for(filename)
         if media_type is None:
             hints.append(f"{filename} (unsupported type, not shown)")
+            continue
+        if byte_len < 0:
+            # Unknown size (metadata read failed): skip, consistent with
+            # batch_items_by_size, which counts only 0<=byteLength<=cap bytes.
+            hints.append(f"{filename} (unreadable, not shown)")
             continue
         if byte_len > max_bytes:
             hints.append(f"{filename} ({byte_len} bytes, omitted: over size cap)")

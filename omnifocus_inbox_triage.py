@@ -109,12 +109,6 @@ def partition_decisions(decisions, item_ids, project_ids,
     return to_move, to_leave
 
 
-def chunk_items(items, size):
-    """Yield successive `size`-length slices of `items`."""
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
-
-
 # ------------------------------- read stage -------------------------------
 
 def parse_read_result(stdout: str) -> Tuple[list, list]:
