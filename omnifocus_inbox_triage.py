@@ -135,6 +135,30 @@ function run() {
     of.includeStandardAdditions = true;
     const ofDoc = of.defaultDocument;
 
+    // Attachments are only reachable via OmniJS; fetch metadata (no bytes) for
+    // all inbox items keyed by task id, then merge onto each item below.
+    let attMap = {};
+    try {
+        const metaScript =
+            "(() => {" +
+            "  const map = {};" +
+            "  inbox.forEach(t => {" +
+            "    if (!t) return;" +
+            "    let atts = [];" +
+            "    try { atts = t.attachments || []; } catch (e) { atts = []; }" +
+            "    if (!atts.length) return;" +
+            "    map[t.id.primaryKey] = atts.map((a, idx) => {" +
+            "      let fn = '', len = -1;" +
+            "      try { fn = a.filename || a.preferredFilename || ''; } catch (e) {}" +
+            "      try { len = a.contents ? a.contents.length : -1; } catch (e) {}" +
+            "      return { filename: fn, byteLength: len, index: idx };" +
+            "    });" +
+            "  });" +
+            "  return JSON.stringify(map);" +
+            "})()";
+        attMap = JSON.parse(of.evaluateJavascript(metaScript));
+    } catch (e) { attMap = {}; }
+
     const items = [];
     const inbox = ofDoc.inboxTasks();
     for (let i = 0; i < inbox.length; i++) {
@@ -146,7 +170,8 @@ function run() {
         if (done) continue;
         let note = '';
         try { note = t.note() || ''; } catch (e) {}
-        items.push({ id: t.id(), name: t.name(), note: note });
+        const tid = t.id();
+        items.push({ id: tid, name: t.name(), note: note, attachments: attMap[tid] || [] });
     }
 
     const projects = [];
@@ -273,12 +298,15 @@ def batch_items_by_size(items, chunk_size, max_bytes, max_batch_bytes):
 
 def classify(items, projects):
     client = anthropic.Anthropic()
+    content = build_user_message(
+        items, projects, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
+    )
     try:
         response = client.messages.parse(
             model=MODEL,
             max_tokens=8192,
             system=build_system_prompt(),
-            messages=[{"role": "user", "content": build_user_content(items, projects)}],
+            messages=[{"role": "user", "content": content}],
             output_format=Classification,
         )
     except anthropic.APIError as e:
@@ -291,7 +319,9 @@ def classify(items, projects):
 
 def classify_in_batches(items, projects, chunk_size=CHUNK_SIZE):
     decisions = []
-    for batch in chunk_items(items, chunk_size):
+    for batch in batch_items_by_size(
+        items, chunk_size, MAX_ATTACHMENT_BYTES, MAX_BATCH_ATTACHMENT_BYTES
+    ):
         result = classify(batch, projects)
         decisions.extend(result.decisions)
     return Classification(decisions=decisions)
