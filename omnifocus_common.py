@@ -127,17 +127,22 @@ function run(argv) {
     const index = parseInt(argv[1], 10);
     const omni =
         "(() => {" +
-        "  const id = " + JSON.stringify(taskId) + ";" +
-        "  let t = flattenedTasks.find(x => x && x.id.primaryKey === id);" +
-        "  if (!t) t = inbox.find(x => x && x.id.primaryKey === id);" +
-        "  if (!t) return JSON.stringify({ error: 'no task' });" +
-        "  const atts = t.attachments || [];" +
-        "  const a = atts[" + index + "];" +
-        "  if (!a) return JSON.stringify({ error: 'no attachment' });" +
-        "  try { return JSON.stringify({ data: a.contents.toBase64() }); }" +
-        "  catch (e) { return JSON.stringify({ error: String(e) }); }" +
+        "  try {" +
+        "    const id = " + JSON.stringify(taskId) + ";" +
+        "    let t = flattenedTasks.find(x => x && x.id.primaryKey === id);" +
+        "    if (!t) t = inbox.find(x => x && x.id.primaryKey === id);" +
+        "    if (!t) return JSON.stringify({ error: 'no task' });" +
+        "    const atts = t.attachments || [];" +
+        "    const a = atts[" + index + "];" +
+        "    if (!a) return JSON.stringify({ error: 'no attachment' });" +
+        "    return JSON.stringify({ data: a.contents.toBase64() });" +
+        "  } catch (e) { return JSON.stringify({ error: String(e) }); }" +
         "})()";
-    return of.evaluateJavascript(omni);
+    try {
+        return of.evaluateJavascript(omni);
+    } catch (e) {
+        return JSON.stringify({ error: String(e) });
+    }
 }
 """
 
