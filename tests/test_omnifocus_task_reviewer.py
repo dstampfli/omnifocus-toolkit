@@ -108,3 +108,29 @@ def test_build_write_config_strips_line_separators():
     w = cfg["writes"][0]
     assert "\u2028" not in w["newTitle"] and w["newTitle"] == "ab"
     assert "\u2029" not in w["note"] and "cd" in w["note"]
+
+
+from omnifocus_task_reviewer import format_report
+
+
+def _rv(task_id="t1", name="old", new="New", summary="S"):
+    task = {"id": task_id, "name": name, "note": "", "attachments": []}
+    return (task, Enrichment(new_title=new, summary=summary))
+
+
+def test_format_report_dry_run_shows_proposed():
+    out = format_report([_rv()], [], [], [], dry_run=True)
+    assert "Would enrich" in out
+    assert "old" in out and "New" in out
+
+
+def test_format_report_apply_shows_enriched():
+    out = format_report([_rv()], [], [], ["New"], dry_run=False)
+    assert "Enriched" in out
+
+
+def test_format_report_lists_failures_and_unresolved():
+    task = {"id": "t2", "name": "bad", "note": "", "attachments": []}
+    out = format_report([], [(task, "boom")], ["NoProj"], [], dry_run=True)
+    assert "Failed" in out and "bad" in out
+    assert "NoProj" in out

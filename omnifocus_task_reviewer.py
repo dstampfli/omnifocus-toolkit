@@ -252,3 +252,54 @@ def apply_enrichments(reviewed, review_tag):
         print(result.stdout.strip(), file=sys.stderr)
         raise SystemExit(1)
     return payload.get("applied", []), payload.get("failed", [])
+
+
+# --------------------------- reporting & CLI --------------------------------
+
+def format_report(reviewed, failed, unresolved, applied_names, dry_run):
+    lines = []
+    if reviewed:
+        header = "Would enrich" if dry_run else "Enriched"
+        lines.append(f"{header} {len(reviewed)} task(s):")
+        for task, enrichment in reviewed:
+            lines.append(f"  * {task['name']}  ->  {enrichment.new_title}")
+            lines.append(f"      {enrichment.summary}")
+    if failed:
+        lines.append("")
+        lines.append(f"Failed ({len(failed)}):")
+        for task, err in failed:
+            lines.append(f"  = {task['name']} - {err}")
+    if unresolved:
+        lines.append("")
+        lines.append(f"Projects not found ({len(unresolved)}): {', '.join(unresolved)}")
+    if not reviewed and not failed:
+        lines.append("Nothing to review.")
+    return "\n".join(lines)
+
+
+def main(argv):
+    projects, apply = parse_args(argv)
+    if not projects:
+        print("usage: omnifocus_task_reviewer.py PROJECT [PROJECT ...] [--apply]",
+              file=sys.stderr)
+        return 2
+
+    tasks, unresolved = read_project_tasks(projects, REVIEW_TAG)
+    reviewed, failed = review_tasks(tasks)
+
+    applied_names = []
+    if apply and reviewed:
+        applied_names, write_failed_ids = apply_enrichments(reviewed, REVIEW_TAG)
+        if write_failed_ids:
+            failed_set = set(write_failed_ids)
+            for task, enrichment in reviewed:
+                if task["id"] in failed_set:
+                    failed.append((task, "write failed"))
+            reviewed = [(t, e) for t, e in reviewed if t["id"] not in failed_set]
+
+    print(format_report(reviewed, failed, unresolved, applied_names, dry_run=not apply))
+    return 1 if (failed or unresolved) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
