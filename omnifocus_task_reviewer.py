@@ -109,6 +109,20 @@ def read_project_tasks(project_names, review_tag):
 # ----------------------------- review stage -----------------------------
 
 WEB_FETCH_BETA = "web-fetch-2025-09-10"
+STRUCTURED_OUTPUTS_BETA = "structured-outputs-2025-12-15"
+
+
+def _enrichment_format():
+    """The output_config.format for a structured Enrichment response.
+
+    Structured outputs require every object to set additionalProperties: false;
+    pydantic's schema omits it, so add it explicitly."""
+    schema = Enrichment.model_json_schema()
+    schema["additionalProperties"] = False
+    return {"type": "json_schema", "schema": schema}
+
+
+ENRICHMENT_FORMAT = _enrichment_format()
 
 
 def build_system_prompt():
@@ -130,17 +144,26 @@ def review_task(task, client):
     content = build_task_content(
         task, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
     )
-    resp = client.beta.messages.parse(
+    resp = client.beta.messages.create(
         model=MODEL,
         max_tokens=1024,
-        betas=[WEB_FETCH_BETA],
+        betas=[WEB_FETCH_BETA, STRUCTURED_OUTPUTS_BETA],
         tools=[{"type": "web_fetch_20260209", "name": "web_fetch",
                 "max_uses": WEB_FETCH_MAX_USES}],
         system=build_system_prompt(),
         messages=[{"role": "user", "content": content}],
-        output_format=Enrichment,
+        output_config={"format": ENRICHMENT_FORMAT},
     )
-    return resp.parsed_output
+    # output_config.format constrains the model's text to the schema; with the
+    # web_fetch server tool the response also carries tool-use/result blocks, so
+    # pick the first text block that validates as an Enrichment.
+    for block in resp.content:
+        if block.type == "text":
+            try:
+                return Enrichment.model_validate_json(block.text)
+            except ValueError:
+                continue
+    raise ValueError("model returned no structured Enrichment output")
 
 
 def review_tasks(tasks, review_fn=review_task):
