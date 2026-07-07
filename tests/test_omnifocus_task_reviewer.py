@@ -100,6 +100,22 @@ def test_build_write_config_appends_summary_preserving_note():
     assert cfg["reviewTag"] == "reviewed"
 
 
+def test_build_write_config_strips_medium_promo_from_note():
+    note = ("Claude Code agents <https://medium.com/x> by Jose\n"
+            "Download Medium on the App Store <https://apps.apple.com/a> "
+            "or Play Store <https://play.google.com/b>\n"
+            "Sent from my iPhone")
+    task = {"id": "t1", "name": "old", "note": note, "attachments": []}
+    reviewed = [(task, Enrichment(new_title="T", summary="S"))]
+    cfg = build_write_config(reviewed, "reviewed")
+    w = cfg["writes"][0]
+    assert "Download Medium" not in w["note"]
+    assert "apps.apple.com" not in w["note"]
+    assert "Claude Code agents" in w["note"]
+    assert "Sent from my iPhone" in w["note"]
+    assert "--- Summary ---" in w["note"]
+
+
 def test_build_write_config_strips_line_separators():
     # U+2028 / U+2029 in model text must not survive into the write payload.
     task = {"id": "t1", "name": "old", "note": "", "attachments": []}

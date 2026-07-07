@@ -19,6 +19,7 @@ from omnifocus_common import (
     build_task_content,
     fetch_attachment_b64,
     run_jxa,
+    strip_medium_promo,
     _positive_int_env,
 )
 
@@ -201,7 +202,7 @@ def build_write_config(reviewed, review_tag):
     for task, enrichment in reviewed:
         title = _sanitize(enrichment.new_title).strip()
         summary = _sanitize(enrichment.summary).strip()
-        original = task.get("note", "")
+        original = strip_medium_promo(task.get("note", "")).strip()
         note = f"{original}\n\n--- Summary ---\n{summary}" if original else f"--- Summary ---\n{summary}"
         writes.append({"taskId": task["id"], "newTitle": title, "note": note})
     return {"writes": writes, "reviewTag": review_tag}

@@ -34,10 +34,26 @@ _MEDIA_TYPES = {
 }
 
 
+# Medium's share emails append an app-promo line to the shared note, e.g.
+# "Download Medium on the App Store <…> or Play Store <…>". Match the whole
+# line (case-insensitive, per-line) so it can be dropped from the note.
+_MEDIUM_APP_PROMO = re.compile(r"(?im)^[ \t]*Download Medium\b.*$")
+
+
+def strip_medium_promo(text: str) -> str:
+    """Remove Medium's 'Download Medium on the App Store … Play Store …' promo
+    line. Returns the text unchanged when the promo is absent."""
+    if not text:
+        return text
+    return _MEDIUM_APP_PROMO.sub("", text)
+
+
 def clean_note(text: str, max_chars: int = 4000) -> str:
-    """Strip invisible padding, collapse whitespace, truncate to max_chars."""
+    """Strip invisible padding and the Medium app-promo line, collapse
+    whitespace, truncate to max_chars."""
     if not text:
         return ""
+    text = strip_medium_promo(text)
     text = _INVISIBLE.sub("", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)  # trim spaces around newlines

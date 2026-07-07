@@ -7,6 +7,7 @@ from omnifocus_common import (
     attachment_block,
     build_task_content,
     extract_webloc_url,
+    strip_medium_promo,
 )
 
 
@@ -29,6 +30,41 @@ def test_clean_note_truncates_to_max_chars():
 def test_clean_note_empty():
     assert clean_note("") == ""
     assert clean_note(None) == ""
+
+
+_MEDIUM_NOTE = (
+    "Claude Code agents: what they actually are "
+    "<https://medium.com/data-science-collective/claude-code-agents-2d6ea121b936> by Jose Parreño\n"
+    "Download Medium on the App Store <https://apps.apple.com/us/app/medium/id828256236> "
+    "or Play Store <https://play.google.com/store/apps/details?id=com.medium.reader>\n"
+    "Sent from my iPhone"
+)
+
+
+def test_strip_medium_promo_removes_download_line():
+    out = strip_medium_promo(_MEDIUM_NOTE)
+    assert "Download Medium" not in out
+    assert "apps.apple.com" not in out
+    assert "play.google.com" not in out
+    # the article link and the signature survive
+    assert "Claude Code agents" in out
+    assert "medium.com/data-science-collective" in out
+    assert "Sent from my iPhone" in out
+
+
+def test_strip_medium_promo_unchanged_when_absent():
+    note = "Just a normal note\nwith two lines"
+    assert strip_medium_promo(note) == note
+
+
+def test_strip_medium_promo_empty():
+    assert strip_medium_promo("") == ""
+
+
+def test_clean_note_strips_medium_promo():
+    out = clean_note(_MEDIUM_NOTE)
+    assert "Download Medium" not in out
+    assert "Claude Code agents" in out and "Sent from my iPhone" in out
 
 
 def test_media_type_for_maps_known_extensions():
