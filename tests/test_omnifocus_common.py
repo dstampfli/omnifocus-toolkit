@@ -1,8 +1,12 @@
+import base64
+import plistlib
+
 from omnifocus_common import (
     clean_note,
     media_type_for,
     attachment_block,
     build_task_content,
+    extract_webloc_url,
 )
 
 
@@ -109,6 +113,62 @@ def test_build_task_content_skips_unreadable_attachment_with_hint():
 def test_build_task_content_cleans_note():
     blocks = build_task_content(_item(note="ready͏͏ now"), lambda tid, i: None, 1000)
     assert "ready now" in blocks[0]["text"]
+
+
+# --- .webloc URL extraction ---------------------------------------------------
+
+def _webloc_bytes(url, fmt=plistlib.FMT_XML):
+    return plistlib.dumps({"URL": url}, fmt=fmt)
+
+
+def test_extract_webloc_url_xml():
+    raw = _webloc_bytes("https://www.udemy.com/course/x/")
+    assert extract_webloc_url(raw) == "https://www.udemy.com/course/x/"
+
+
+def test_extract_webloc_url_binary():
+    raw = _webloc_bytes("https://example.com/bin", fmt=plistlib.FMT_BINARY)
+    assert extract_webloc_url(raw) == "https://example.com/bin"
+
+
+def test_extract_webloc_url_missing_key_returns_none():
+    raw = plistlib.dumps({"Not-URL": "x"})
+    assert extract_webloc_url(raw) is None
+
+
+def test_extract_webloc_url_unparseable_returns_none():
+    assert extract_webloc_url(b"not a plist at all") is None
+
+
+def test_build_task_content_surfaces_webloc_url_no_vision_block():
+    # A .webloc is a URL bookmark, not visual media: its URL is surfaced as text
+    # (so the model can fetch it), and it produces no vision block.
+    raw = _webloc_bytes("https://www.udemy.com/course/claude-architect/")
+    item = _item(attachments=[{"filename": "Course.webloc", "byteLength": len(raw), "index": 0}])
+    fetch = lambda tid, i: base64.b64encode(raw).decode()
+    blocks = build_task_content(item, fetch, 1_000_000)
+    assert len(blocks) == 1  # text only
+    text = blocks[0]["text"]
+    assert "https://www.udemy.com/course/claude-architect/" in text
+    assert "Course.webloc" in text
+
+
+def test_build_task_content_webloc_detected_via_preferred_filename():
+    # OmniFocus reports .webloc names in preferredFilename (filename is null),
+    # which the read stage folds into the "filename" field — case-insensitive.
+    raw = _webloc_bytes("https://example.com/from-preferred")
+    item = _item(attachments=[{"filename": "Bookmark.WEBLOC", "byteLength": len(raw), "index": 0}])
+    fetch = lambda tid, i: base64.b64encode(raw).decode()
+    blocks = build_task_content(item, fetch, 1_000_000)
+    assert "https://example.com/from-preferred" in blocks[0]["text"]
+
+
+def test_build_task_content_unreadable_webloc_hints_without_url():
+    item = _item(attachments=[{"filename": "Course.webloc", "byteLength": 50, "index": 0}])
+    blocks = build_task_content(item, lambda tid, i: None, 1_000_000)  # fetch fails
+    assert len(blocks) == 1
+    assert "Course.webloc" in blocks[0]["text"]
+    assert "http" not in blocks[0]["text"]
 
 
 import os

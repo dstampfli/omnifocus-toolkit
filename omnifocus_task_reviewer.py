@@ -184,54 +184,48 @@ def build_write_config(reviewed, review_tag):
     return {"writes": writes, "reviewTag": review_tag}
 
 
-# Plain JXA sets name/note from argv (injection-safe for arbitrary text); the
-# OmniJS bridge then adds the review tag, embedding ONLY task ids + the tag name.
+# The whole write runs through the OmniJS bridge: setting a task's note via
+# plain JXA replaces the note's rich text and DESTROYS its embedded attachments
+# (.webloc links, PDFs, images); setting it via OmniJS preserves them. To keep
+# the model's free text out of the OmniJS *source* (injection safety), each
+# title/note is percent-encoded with encodeURIComponent in JXA — whose output is
+# a safe [A-Za-z0-9-_.!~*'()%] subset that cannot break out of a JS string
+# literal — and decoded back with decodeURIComponent inside OmniJS. Only task
+# ids, that encoded text, and the (trusted, config) tag name reach the source.
 WRITE_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
     const of = Application('OmniFocus');
-    const doc = of.defaultDocument;
 
-    const byId = {};
-    cfg.writes.forEach(w => { byId[w.taskId] = w; });
+    // Each row: [taskId, encodeURIComponent(title), encodeURIComponent(note)].
+    // encodeURIComponent output contains no ", \\, or newlines, so wrapping it
+    // in double quotes yields a safe JS string literal.
+    const rows = cfg.writes.map(w =>
+        "[" + JSON.stringify(w.taskId) + ",\"" +
+        encodeURIComponent(w.newTitle) + "\",\"" +
+        encodeURIComponent(w.note) + "\"]"
+    ).join(",");
 
-    const done = {};
-    const failed = [];
-    const all = doc.flattenedTasks();
-    for (let i = 0; i < all.length; i++) {
-        const t = all[i];
-        let id;
-        try { id = t.id(); } catch (e) { continue; }
-        const w = byId[id];
-        if (!w) continue;
-        try {
-            t.name = w.newTitle;
-            t.note = w.note;
-            done[id] = true;
-        } catch (e) { failed.push(id); }
-    }
+    const omni =
+        "(() => {" +
+        "  const writes = [" + rows + "];" +
+        "  const tagName = " + JSON.stringify(cfg.reviewTag) + ";" +
+        "  let tag = flattenedTags.byName(tagName) || new Tag(tagName);" +
+        "  const applied = []; const failed = [];" +
+        "  writes.forEach(r => {" +
+        "    const t = Task.byIdentifier(r[0]);" +
+        "    if (!t) { failed.push(r[0]); return; }" +
+        "    try {" +
+        "      t.name = decodeURIComponent(r[1]);" +
+        "      t.note = decodeURIComponent(r[2]);" +   // preserves attachments
+        "      t.addTag(tag);" +
+        "      applied.push(t.name);" +
+        "    } catch (e) { failed.push(r[0]); }" +
+        "  });" +
+        "  return JSON.stringify({ applied: applied, failed: failed });" +
+        "})()";
 
-    let applied = [];
-    const ids = Object.keys(done);
-    if (ids.length) {
-        const tagRes = of.evaluateJavascript(
-            "(() => {" +
-            "  const ids = " + JSON.stringify(ids) + ";" +
-            "  const name = " + JSON.stringify(cfg.reviewTag) + ";" +
-            "  let tag = flattenedTags.byName(name) || new Tag(name);" +
-            "  const ok = [];" +
-            "  ids.forEach(id => { const t = Task.byIdentifier(id); if (t) { t.addTag(tag); ok.push(t.name); } });" +
-            "  return JSON.stringify(ok);" +
-            "})()"
-        );
-        applied = JSON.parse(tagRes);
-    }
-
-    cfg.writes.forEach(w => {
-        if (!done[w.taskId] && failed.indexOf(w.taskId) === -1) failed.push(w.taskId);
-    });
-
-    return JSON.stringify({ applied: applied, failed: failed });
+    return of.evaluateJavascript(omni);
 }
 """
 

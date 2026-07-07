@@ -8,8 +8,10 @@ osascript/OmniJS I/O (run_jxa, fetch_attachment_b64) is the I/O boundary and is
 not unit-tested.
 """
 
+import base64
 import json
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -56,6 +58,23 @@ def media_type_for(filename: str) -> Optional[str]:
     return _MEDIA_TYPES.get(filename[dot:].lower())
 
 
+def extract_webloc_url(raw: bytes) -> Optional[str]:
+    """Return the URL stored in a .webloc bookmark's bytes, or None.
+
+    A .webloc is a property list (XML or binary) with a top-level ``URL`` key;
+    plistlib parses both formats. Returns None on a parse failure or a missing/
+    non-string/empty URL, so a malformed bookmark never raises."""
+    try:
+        data = plistlib.loads(raw)
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        url = data.get("URL")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return None
+
+
 def attachment_block(media_type: str, data_b64: str) -> dict:
     """Build one Anthropic content block: 'document' for PDF, 'image' otherwise."""
     kind = "document" if media_type == "application/pdf" else "image"
@@ -72,15 +91,32 @@ def build_task_content(
     max_note_chars: int = 4000,
 ) -> list:
     """Return the ordered content-block list for one task: a text header plus a
-    vision block per in-scope attachment. Skipped attachments (unsupported type,
-    unknown/negative size, over the size cap, or unreadable) still appear in the
-    text header's hint list so the model knows something existed. fetch_bytes is
-    injected for testing."""
+    vision block per in-scope attachment. A .webloc attachment contributes its
+    URL to a "Linked web page(s)" line instead of a vision block. Skipped
+    attachments (unsupported type, unknown/negative size, over the size cap, or
+    unreadable) still appear in the text header's hint list so the model knows
+    something existed. fetch_bytes is injected for testing."""
     hints = []
     vision_blocks = []
+    weblinks = []
     for att in item.get("attachments", []):
         filename = att.get("filename", "")
         byte_len = att.get("byteLength", -1)
+        if filename.lower().endswith(".webloc"):
+            # A .webloc is a URL bookmark, not visual media. Read its bytes and
+            # surface the URL as text so the model can fetch the linked page;
+            # emit no vision block.
+            url = None
+            if 0 <= byte_len <= max_bytes:
+                data_b64 = fetch_bytes(item["id"], att.get("index"))
+                if data_b64:
+                    url = extract_webloc_url(base64.b64decode(data_b64))
+            if url:
+                weblinks.append(url)
+                hints.append(f"{filename} (web link)")
+            else:
+                hints.append(f"{filename} (web link, URL unreadable)")
+            continue
         media_type = media_type_for(filename)
         if media_type is None:
             hints.append(f"{filename} (unsupported type, not shown)")
@@ -104,6 +140,8 @@ def build_task_content(
     note = clean_note(item.get("note", ""), max_note_chars)
     if note:
         header += f"\n{note}"
+    if weblinks:
+        header += f"\nLinked web page(s): {', '.join(weblinks)}"
     if hints:
         header += f"\n[attachments: {', '.join(hints)}]"
 
