@@ -135,6 +135,19 @@ def test_build_write_config_strips_line_separators():
     assert "\u2029" not in w["note"] and "cd" in w["note"]
 
 
+from datetime import datetime
+
+
+def test_build_write_config_stamps_summary_with_datetime():
+    task = {"id": "t1", "name": "old", "note": "orig", "attachments": []}
+    reviewed = [(task, Enrichment(new_title="T", summary="It is about X."))]
+    now = datetime(2026, 7, 8, 12, 28)
+    cfg = build_write_config(reviewed, "Reviewed", "Kanban", now=now)
+    note = cfg["writes"][0]["note"]
+    # stamp on its own line directly under the header, above the summary text
+    assert "--- Summary ---\n07/08/2026 1228\nIt is about X." in note
+
+
 from omnifocus_task_reviewer import format_report
 
 

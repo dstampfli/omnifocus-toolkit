@@ -202,6 +202,7 @@ def review_tasks(tasks, review_fn=review_task):
 # ------------------------------- apply stage -------------------------------
 
 import re  # noqa: E402
+from datetime import datetime  # noqa: E402
 
 # Strip line/paragraph separators and C0/C1 control chars (except \n and \t)
 # from model text before it is written back. Defence in depth: the title/note
@@ -213,13 +214,19 @@ def _sanitize(text):
     return _UNSAFE.sub("", text or "")
 
 
-def build_write_config(reviewed, review_tag, kanban_tag="Kanban"):
+def _stamp(now=None):
+    # Local-time review stamp, e.g. "07/08/2026 1228" (military time, no colon).
+    return (now or datetime.now()).strftime("%m/%d/%Y %H%M")
+
+
+def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
     writes = []
     for task, enrichment in reviewed:
         title = _sanitize(enrichment.new_title).strip()
         summary = _sanitize(enrichment.summary).strip()
         original = strip_medium_promo(task.get("note", "")).strip()
-        note = f"{original}\n\n--- Summary ---\n{summary}" if original else f"--- Summary ---\n{summary}"
+        body = f"--- Summary ---\n{_stamp(now)}\n{summary}"
+        note = f"{original}\n\n{body}" if original else body
         writes.append({"taskId": task["id"], "newTitle": title, "note": note})
     return {"writes": writes, "reviewTag": review_tag, "kanbanTag": kanban_tag}
 
