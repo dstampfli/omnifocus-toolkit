@@ -32,13 +32,14 @@ import os  # noqa: E402  (after load_dotenv so .env is present)
 def _load_config():
     model = os.environ.get("MODEL", "claude-sonnet-5")
     tag = os.environ.get("REVIEW_TAG", "reviewed").strip() or "reviewed"
+    kanban = os.environ.get("KANBAN_TAG", "Kanban").strip() or "Kanban"
     fetches = _positive_int_env("WEB_FETCH_MAX_USES", "3")
     max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
-    return model, tag, fetches, max_att, max_note
+    return model, tag, kanban, fetches, max_att, max_note
 
 
-MODEL, REVIEW_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS = _load_config()
+MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS = _load_config()
 # --------------------------------------------------------------------------
 
 
@@ -197,7 +198,7 @@ def _sanitize(text):
     return _UNSAFE.sub("", text or "")
 
 
-def build_write_config(reviewed, review_tag):
+def build_write_config(reviewed, review_tag, kanban_tag="Kanban"):
     writes = []
     for task, enrichment in reviewed:
         title = _sanitize(enrichment.new_title).strip()
@@ -205,7 +206,7 @@ def build_write_config(reviewed, review_tag):
         original = strip_medium_promo(task.get("note", "")).strip()
         note = f"{original}\n\n--- Summary ---\n{summary}" if original else f"--- Summary ---\n{summary}"
         writes.append({"taskId": task["id"], "newTitle": title, "note": note})
-    return {"writes": writes, "reviewTag": review_tag}
+    return {"writes": writes, "reviewTag": review_tag, "kanbanTag": kanban_tag}
 
 
 # The whole write runs through the OmniJS bridge: setting a task's note via
@@ -215,7 +216,8 @@ def build_write_config(reviewed, review_tag):
 # title/note is percent-encoded with encodeURIComponent in JXA — whose output is
 # a safe [A-Za-z0-9-_.!~*'()%] subset that cannot break out of a JS string
 # literal — and decoded back with decodeURIComponent inside OmniJS. Only task
-# ids, that encoded text, and the (trusted, config) tag name reach the source.
+# ids, that encoded text, and the (trusted, config) tag names (REVIEW_TAG and
+# KANBAN_TAG) reach the source.
 WRITE_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
@@ -234,7 +236,14 @@ function run(argv) {
         "(() => {" +
         "  const writes = [" + rows + "];" +
         "  const tagName = " + JSON.stringify(cfg.reviewTag) + ";" +
-        "  let tag = flattenedTags.byName(tagName) || new Tag(tagName);" +
+        "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
+        "  const parent = flattenedTags.byName(kanbanName) || new Tag(kanbanName);" +
+        "  let tag = parent.children.byName(tagName);" +
+        "  if (!tag) {" +
+        "    const existing = flattenedTags.byName(tagName);" +
+        "    if (existing) { moveTags([existing], parent); tag = existing; }" +
+        "    else { tag = new Tag(tagName, parent); }" +
+        "  }" +
         "  const applied = []; const failed = [];" +
         "  writes.forEach(r => {" +
         "    const t = Task.byIdentifier(r[0]);" +
@@ -254,8 +263,8 @@ function run(argv) {
 """
 
 
-def apply_enrichments(reviewed, review_tag):
-    cfg = json.dumps(build_write_config(reviewed, review_tag))
+def apply_enrichments(reviewed, review_tag, kanban_tag):
+    cfg = json.dumps(build_write_config(reviewed, review_tag, kanban_tag))
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", WRITE_JXA, cfg],
         capture_output=True,
@@ -309,7 +318,7 @@ def main(argv):
 
     applied_names = []
     if apply and reviewed:
-        applied_names, write_failed_ids = apply_enrichments(reviewed, REVIEW_TAG)
+        applied_names, write_failed_ids = apply_enrichments(reviewed, REVIEW_TAG, KANBAN_TAG)
         if write_failed_ids:
             failed_set = set(write_failed_ids)
             for task, enrichment in reviewed:

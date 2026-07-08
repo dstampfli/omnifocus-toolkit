@@ -26,12 +26,13 @@ def test_parse_args_no_projects():
 
 
 def test_load_config_defaults(monkeypatch):
-    for k in ("MODEL", "REVIEW_TAG", "WEB_FETCH_MAX_USES",
+    for k in ("MODEL", "REVIEW_TAG", "KANBAN_TAG", "WEB_FETCH_MAX_USES",
               "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
         monkeypatch.delenv(k, raising=False)
-    model, tag, fetches, max_att, max_note = _load_config()
+    model, tag, kanban, fetches, max_att, max_note = _load_config()
     assert model == "claude-sonnet-5"
     assert tag == "reviewed"
+    assert kanban == "Kanban"
     assert fetches == 3
     assert max_att == 10485760
     assert max_note == 4000
@@ -98,6 +99,14 @@ def test_build_write_config_appends_summary_preserving_note():
     assert "--- Summary ---" in w["note"]
     assert "It is about X." in w["note"]
     assert cfg["reviewTag"] == "reviewed"
+
+
+def test_build_write_config_includes_kanban_tag():
+    task = {"id": "t1", "name": "old", "note": "", "attachments": []}
+    reviewed = [(task, Enrichment(new_title="T", summary="S"))]
+    cfg = build_write_config(reviewed, "Reviewed", "Kanban")
+    assert cfg["reviewTag"] == "Reviewed"
+    assert cfg["kanbanTag"] == "Kanban"
 
 
 def test_build_write_config_strips_medium_promo_from_note():
