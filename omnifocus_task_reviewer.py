@@ -198,7 +198,7 @@ def _sanitize(text):
     return _UNSAFE.sub("", text or "")
 
 
-def build_write_config(reviewed, review_tag):
+def build_write_config(reviewed, review_tag, kanban_tag="Kanban"):
     writes = []
     for task, enrichment in reviewed:
         title = _sanitize(enrichment.new_title).strip()
@@ -206,7 +206,7 @@ def build_write_config(reviewed, review_tag):
         original = strip_medium_promo(task.get("note", "")).strip()
         note = f"{original}\n\n--- Summary ---\n{summary}" if original else f"--- Summary ---\n{summary}"
         writes.append({"taskId": task["id"], "newTitle": title, "note": note})
-    return {"writes": writes, "reviewTag": review_tag}
+    return {"writes": writes, "reviewTag": review_tag, "kanbanTag": kanban_tag}
 
 
 # The whole write runs through the OmniJS bridge: setting a task's note via
@@ -255,8 +255,8 @@ function run(argv) {
 """
 
 
-def apply_enrichments(reviewed, review_tag):
-    cfg = json.dumps(build_write_config(reviewed, review_tag))
+def apply_enrichments(reviewed, review_tag, kanban_tag):
+    cfg = json.dumps(build_write_config(reviewed, review_tag, kanban_tag))
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", WRITE_JXA, cfg],
         capture_output=True,
@@ -310,7 +310,7 @@ def main(argv):
 
     applied_names = []
     if apply and reviewed:
-        applied_names, write_failed_ids = apply_enrichments(reviewed, REVIEW_TAG)
+        applied_names, write_failed_ids = apply_enrichments(reviewed, REVIEW_TAG, KANBAN_TAG)
         if write_failed_ids:
             failed_set = set(write_failed_ids)
             for task, enrichment in reviewed:

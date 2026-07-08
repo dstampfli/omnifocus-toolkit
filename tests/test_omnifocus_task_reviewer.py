@@ -101,6 +101,14 @@ def test_build_write_config_appends_summary_preserving_note():
     assert cfg["reviewTag"] == "reviewed"
 
 
+def test_build_write_config_includes_kanban_tag():
+    task = {"id": "t1", "name": "old", "note": "", "attachments": []}
+    reviewed = [(task, Enrichment(new_title="T", summary="S"))]
+    cfg = build_write_config(reviewed, "Reviewed", "Kanban")
+    assert cfg["reviewTag"] == "Reviewed"
+    assert cfg["kanbanTag"] == "Kanban"
+
+
 def test_build_write_config_strips_medium_promo_from_note():
     note = ("Claude Code agents <https://medium.com/x> by Jose\n"
             "Download Medium on the App Store <https://apps.apple.com/a> "
