@@ -61,19 +61,32 @@ def parse_read_result(stdout: str) -> Tuple[list, list]:
     return payload["tasks"], payload["unresolved"]
 
 
-# Reads incomplete, non-dropped, not-yet-reviewed tasks in the named projects,
-# with attachment metadata, entirely in OmniJS (attachments + tags need it).
-# argv[0] = JSON {projectNames: [...], reviewTag: "..."}.
+# Reads incomplete, non-dropped tasks in the named projects that are not yet on
+# the Kanban board, with attachment metadata, entirely in OmniJS (attachments +
+# tags need it). A task is skipped if it carries ANY tag in the Kanban subtree
+# (the KANBAN_TAG parent or any descendant lane) — so once a task has been
+# reviewed (Reviewed lane) and progresses to To Do / In Progress / Done it is
+# never re-enriched — with a fallback skip on any tag named reviewTag (guards a
+# stray top-level Reviewed that predates the reparent under Kanban).
+# argv[0] = JSON {projectNames: [...], reviewTag: "...", kanbanTag: "..."}.
 READ_TASKS_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
     const of = Application('OmniFocus');
     const namesJson = JSON.stringify(cfg.projectNames);
     const tagJson = JSON.stringify(cfg.reviewTag);
+    const kanbanJson = JSON.stringify(cfg.kanbanTag);
     const omni =
         "(() => {" +
         "  const wanted = " + namesJson + ";" +
         "  const reviewTag = " + tagJson + ";" +
+        "  const kanbanName = " + kanbanJson + ";" +
+        "  const kanbanParent = flattenedTags.byName(kanbanName);" +
+        "  const kanbanIds = {};" +
+        "  if (kanbanParent) {" +
+        "    kanbanIds[kanbanParent.id.primaryKey] = true;" +
+        "    (kanbanParent.flattenedChildren || []).forEach(c => { kanbanIds[c.id.primaryKey] = true; });" +
+        "  }" +
         "  const unresolved = [];" +
         "  const tasksOut = [];" +
         "  wanted.forEach(nm => {" +
@@ -82,8 +95,9 @@ function run(argv) {
         "    proj.flattenedTasks.forEach(t => {" +
         "      if (!t) return;" +
         "      if (t.completed || t.taskStatus === Task.Status.Dropped) return;" +
-        "      const tags = (t.tags || []).map(x => x.name);" +
-        "      if (tags.indexOf(reviewTag) !== -1) return;" +
+        "      const ttags = t.tags || [];" +
+        "      if (ttags.some(x => kanbanIds[x.id.primaryKey])) return;" +
+        "      if (ttags.map(x => x.name).indexOf(reviewTag) !== -1) return;" +
         "      let atts = [];" +
         "      try { atts = t.attachments || []; } catch (e) { atts = []; }" +
         "      const meta = atts.map((a, idx) => {" +
@@ -102,8 +116,9 @@ function run(argv) {
 """
 
 
-def read_project_tasks(project_names, review_tag):
-    cfg = json.dumps({"projectNames": project_names, "reviewTag": review_tag})
+def read_project_tasks(project_names, review_tag, kanban_tag):
+    cfg = json.dumps({"projectNames": project_names, "reviewTag": review_tag,
+                      "kanbanTag": kanban_tag})
     payload = run_jxa(READ_TASKS_JXA, cfg)
     return payload["tasks"], payload["unresolved"]
 
@@ -313,7 +328,7 @@ def main(argv):
               file=sys.stderr)
         return 2
 
-    tasks, unresolved = read_project_tasks(projects, REVIEW_TAG)
+    tasks, unresolved = read_project_tasks(projects, REVIEW_TAG, KANBAN_TAG)
     reviewed, failed = review_tasks(tasks)
 
     applied_names = []
