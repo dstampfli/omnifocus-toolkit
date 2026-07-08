@@ -8,7 +8,7 @@ Two independent macOS automation utilities for OmniFocus, plus their shared scaf
 
 - `omnifocus_omnioutliner_sync.py` syncs tagged OmniFocus Inbox tasks into an OmniOutliner document.
 - `omnifocus_inbox_triage.py` reads every *open* OmniFocus Inbox task and uses the Claude API to classify each one against the user's existing active projects, moving high-confidence matches into their project. Each item's note and any PDF/image attachments are sent to a vision-capable model as part of classification.
-- `omnifocus_task_reviewer.py` reviews not-yet-reviewed tasks in named OmniFocus project(s), enriching each in place — fetching any linked page via the model's web_fetch and reading its attachments to produce a clearer title and an appended note summary — then marks it done with a tag (default `reviewed`) so re-runs skip it. Reuses `omnifocus_common`'s helpers.
+- `omnifocus_task_reviewer.py` reviews not-yet-reviewed tasks in named OmniFocus project(s), enriching each in place — fetching any linked page via the model's web_fetch and reading its attachments to produce a clearer title and an appended, timestamped note summary — then marks it done with a tag (default `reviewed`) so re-runs skip it. Reuses `omnifocus_common`'s helpers.
 - `omnifocus_common.py` holds task-enrichment helpers (`clean_note`, `media_type_for`, `attachment_block`, `extract_webloc_url`, `build_task_content`, `run_jxa`, `fetch_attachment_b64`, `_positive_int_env`) shared by the triage and reviewer scripts. `build_task_content` turns a `.webloc` attachment into a "Linked web page(s)" text line (URL parsed by `extract_webloc_url`) rather than a vision block, so the model can fetch the link.
 
 `main.py` is the unused `uv`-generated placeholder entry point.
