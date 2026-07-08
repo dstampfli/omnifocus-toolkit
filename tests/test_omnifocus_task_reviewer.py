@@ -26,12 +26,13 @@ def test_parse_args_no_projects():
 
 
 def test_load_config_defaults(monkeypatch):
-    for k in ("MODEL", "REVIEW_TAG", "WEB_FETCH_MAX_USES",
+    for k in ("MODEL", "REVIEW_TAG", "KANBAN_TAG", "WEB_FETCH_MAX_USES",
               "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
         monkeypatch.delenv(k, raising=False)
-    model, tag, fetches, max_att, max_note = _load_config()
+    model, tag, kanban, fetches, max_att, max_note = _load_config()
     assert model == "claude-sonnet-5"
     assert tag == "reviewed"
+    assert kanban == "Kanban"
     assert fetches == 3
     assert max_att == 10485760
     assert max_note == 4000

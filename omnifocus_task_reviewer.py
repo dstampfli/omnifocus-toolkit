@@ -32,13 +32,14 @@ import os  # noqa: E402  (after load_dotenv so .env is present)
 def _load_config():
     model = os.environ.get("MODEL", "claude-sonnet-5")
     tag = os.environ.get("REVIEW_TAG", "reviewed").strip() or "reviewed"
+    kanban = os.environ.get("KANBAN_TAG", "Kanban").strip() or "Kanban"
     fetches = _positive_int_env("WEB_FETCH_MAX_USES", "3")
     max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
-    return model, tag, fetches, max_att, max_note
+    return model, tag, kanban, fetches, max_att, max_note
 
 
-MODEL, REVIEW_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS = _load_config()
+MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS = _load_config()
 # --------------------------------------------------------------------------
 
 
