@@ -216,7 +216,8 @@ def build_write_config(reviewed, review_tag, kanban_tag="Kanban"):
 # title/note is percent-encoded with encodeURIComponent in JXA — whose output is
 # a safe [A-Za-z0-9-_.!~*'()%] subset that cannot break out of a JS string
 # literal — and decoded back with decodeURIComponent inside OmniJS. Only task
-# ids, that encoded text, and the (trusted, config) tag name reach the source.
+# ids, that encoded text, and the (trusted, config) tag names (REVIEW_TAG and
+# KANBAN_TAG) reach the source.
 WRITE_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
