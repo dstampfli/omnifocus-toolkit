@@ -235,7 +235,14 @@ function run(argv) {
         "(() => {" +
         "  const writes = [" + rows + "];" +
         "  const tagName = " + JSON.stringify(cfg.reviewTag) + ";" +
-        "  let tag = flattenedTags.byName(tagName) || new Tag(tagName);" +
+        "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
+        "  const parent = flattenedTags.byName(kanbanName) || new Tag(kanbanName);" +
+        "  let tag = parent.children.byName(tagName);" +
+        "  if (!tag) {" +
+        "    const existing = flattenedTags.byName(tagName);" +
+        "    if (existing) { moveTags([existing], parent); tag = existing; }" +
+        "    else { tag = new Tag(tagName, parent); }" +
+        "  }" +
         "  const applied = []; const failed = [];" +
         "  writes.forEach(r => {" +
         "    const t = Task.byIdentifier(r[0]);" +
