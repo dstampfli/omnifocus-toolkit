@@ -11,6 +11,8 @@ Two independent macOS automation utilities for OmniFocus, plus their shared scaf
 - `omnifocus_task_reviewer.py` reviews not-yet-reviewed tasks in named OmniFocus project(s), enriching each in place — fetching any linked page via the model's web_fetch and reading its attachments to produce a clearer title and an appended, timestamped note summary — then marks it done with a tag (default `reviewed`) so re-runs skip it. Reuses `omnifocus_common`'s helpers.
 - `omnifocus_common.py` holds task-enrichment helpers (`clean_note`, `media_type_for`, `attachment_block`, `extract_webloc_url`, `build_task_content`, `run_jxa`, `fetch_attachment_b64`, `_positive_int_env`) shared by the triage and reviewer scripts. `build_task_content` turns a `.webloc` attachment into a "Linked web page(s)" text line (URL parsed by `extract_webloc_url`) rather than a vision block, so the model can fetch the link.
 
+- `omnifocus_kanban_plugin/of-kanban-board.omnifocusjs` is a vendored, modified copy of the Omni Automation "Kanban Board" plug-in (v1.2): it adds a `Reviewed` lane (first column, `checkmark.seal` icon) to the upstream `To Do / In Progress / Waiting / Done`. It pairs with `omnifocus_task_reviewer.py`, which tags reviewed tasks `Kanban ▸ Reviewed`. See `omnifocus_kanban_plugin/README.md`.
+
 `main.py` is the unused `uv`-generated placeholder entry point.
 
 ## Commands
