@@ -1,5 +1,5 @@
 def main():
-    print("Hello from training-inbox!")
+    print("Hello from omnifocus-toolkit!")
 
 
 if __name__ == "__main__":

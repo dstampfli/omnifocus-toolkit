@@ -1,4 +1,4 @@
-# training-inbox
+# omnifocus-toolkit
 
 Sync tagged tasks from your **OmniFocus** Inbox into an **OmniOutliner** document.
 
