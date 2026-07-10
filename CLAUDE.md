@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Two independent macOS automation utilities for OmniFocus, plus their shared scaffolding:
+Three independent macOS automation utilities for OmniFocus, a local MCP server that exposes two of them to Claude Desktop, plus their shared scaffolding:
 
 - `omnifocus_omnioutliner_sync.py` syncs tagged OmniFocus Inbox tasks into an OmniOutliner document.
 - `omnifocus_inbox_triage.py` reads every *open* OmniFocus Inbox task and uses the Claude API to classify each one against the user's existing active projects, moving high-confidence matches into their project. Each item's note and any PDF/image attachments are sent to a vision-capable model as part of classification.
