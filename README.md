@@ -1,50 +1,33 @@
 # omnifocus-toolkit
 
-Sync tagged tasks from your **OmniFocus** Inbox into an **OmniOutliner** document.
+AI-assisted automation for **OmniFocus**, powered by the Claude API:
 
-`omnifocus_omnioutliner_sync.py` reads every task in the OmniFocus Inbox tagged
-`training` and appends one row per task under the `_Inbox_` row in the OmniOutliner
-document named `Training`. Task notes are copied into each row's note field. Topics
-already present under the anchor are skipped, so the script is safe to re-run.
+- **Inbox triage** — classify open Inbox tasks against your active projects and
+  move confident matches into place.
+- **Task reviewer** — enrich not-yet-reviewed tasks in named projects with a
+  clearer title and a summary of any linked page or attachment.
+- **MCP server** — expose both tools to Claude Desktop / Cowork so a scheduled
+  agent can run them for you.
+
+Both tools read your OmniFocus data locally via `osascript` (JXA) and are
+**dry-run by default** — they report what they would do and change nothing until
+you pass `--apply`.
 
 ## Requirements
 
-- macOS with OmniFocus 3/4 and OmniOutliner 5+ installed
-- The `Training` document **open** in OmniOutliner (simplest), or set `DOC_PATH`
-  in the script to the absolute path of a `.ooutline` file it should open
-- Python 3.9+ (standard library only — no dependencies to install)
+- macOS with OmniFocus 3/4 installed
+- [`uv`](https://docs.astral.sh/uv/) and Python 3.12+ (managed by `uv`)
+- An Anthropic API key
 - On first run, macOS prompts for Automation permissions (System Settings →
-  Privacy & Security → Automation) for your terminal app
+  Privacy & Security → Automation) so `osascript` can control OmniFocus
 
-## Usage
+Install dependencies and set up your key:
 
 ```bash
-python3 omnifocus_omnioutliner_sync.py            # copy matching tasks into OmniOutliner
-python3 omnifocus_omnioutliner_sync.py --dry-run  # list what would be copied, write nothing
-python3 omnifocus_omnioutliner_sync.py --complete # copy, then mark copied tasks complete in OmniFocus
+uv sync
+cp .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
 ```
-
-`--complete` marks only the tasks that were actually copied; duplicates and skipped
-tasks are left untouched. It is ignored when combined with `--dry-run`.
-
-## Configuration
-
-Edit the constants at the top of `omnifocus_omnioutliner_sync.py`:
-
-| Constant     | Default      | Meaning                                                        |
-| ------------ | ------------ | -------------------------------------------------------------- |
-| `TAG_NAME`   | `training`   | Case-insensitive tag name that selects inbox tasks             |
-| `DOC_NAME`   | `Training`   | OmniOutliner document name (as shown in its title bar)         |
-| `ANCHOR_ROW` | `_Inbox_`    | Row under which new child rows are appended                    |
-| `DOC_PATH`   | `""`         | Optional absolute path to a `.ooutline` file to open if closed |
-
-## How it works
-
-The script is a thin Python wrapper around a JXA (JavaScript for Automation)
-program executed via `osascript`. The Python side handles CLI flags and formats
-output; the JXA side pulls the tagged inbox tasks, locates the anchor row, appends
-the new rows (deduping against existing topics), and optionally completes the
-copied tasks in OmniFocus. All communication between the two happens as JSON.
 
 ## Inbox triage (`omnifocus_inbox_triage.py`)
 
@@ -63,20 +46,9 @@ each project (e.g. *"Me — personal: repairs, appliances, utilities"*) markedly
 improves accuracy, since names alone are often ambiguous (two similarly-named projects).
 Projects with no note fall back to name and folder path.
 
-Requires an Anthropic API key in addition to the OmniFocus/macOS requirements
-above. Install dependencies with `uv sync`.
-
-Configuration lives in a local `.env` file (gitignored). Copy the template and
-add your key:
-
 ```bash
-cp .env.example .env
-# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
-```
-
-```bash
-python omnifocus_inbox_triage.py            # dry-run: classify and report, change nothing
-python omnifocus_inbox_triage.py --apply    # classify, then move high-confidence matches
+uv run python omnifocus_inbox_triage.py            # dry-run: classify and report, change nothing
+uv run python omnifocus_inbox_triage.py --apply    # classify, then move high-confidence matches
 ```
 
 `.env` settings (each falls back to a built-in default if omitted):
@@ -108,9 +80,9 @@ and reads its attachments, then sets a clearer title and appends a `--- Summary
 attachments are preserved.
 
 ```bash
-python omnifocus_task_reviewer.py "Training"            # dry-run: show proposed enrichments
-python omnifocus_task_reviewer.py "Training" "Tech"     # multiple projects
-python omnifocus_task_reviewer.py "Training" --apply    # write: rename, append summary, tag reviewed
+uv run python omnifocus_task_reviewer.py "Training"            # dry-run: show proposed enrichments
+uv run python omnifocus_task_reviewer.py "Training" "Tech"     # multiple projects
+uv run python omnifocus_task_reviewer.py "Training" --apply    # write: rename, append summary, tag reviewed
 ```
 
 Uses the same `.env` and Anthropic key as the triage tool, plus `REVIEW_TAG` and
