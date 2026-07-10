@@ -172,3 +172,53 @@ def test_format_report_lists_failures_and_unresolved():
     out = format_report([], [(task, "boom")], ["NoProj"], [], dry_run=True)
     assert "Failed" in out and "bad" in out
     assert "NoProj" in out
+
+
+from omnifocus_task_reviewer import run_review
+
+
+def _tk(tid="t1", name="old"):
+    return {"id": tid, "name": name, "note": "", "attachments": []}
+
+
+def test_run_review_dry_run_builds_reviewed():
+    result = run_review(
+        ["Training"],
+        apply=False,
+        read=lambda projs, rt, kt: ([_tk("t1", "old")], []),
+        review=lambda tasks: ([(_tk("t1", "old"),
+                                Enrichment(new_title="New", summary="S"))], []),
+        apply_fn=lambda rv, rt, kt: ([], []),
+    )
+    assert result["dry_run"] is True
+    assert result["counts"] == {"reviewed": 1, "applied": 0, "failed": 0, "unresolved": 0}
+    assert result["reviewed"][0]["old_name"] == "old"
+    assert result["reviewed"][0]["new_title"] == "New"
+    assert result["reviewed"][0]["summary"] == "S"
+
+
+def test_run_review_apply_moves_write_failures_to_failed():
+    reviewed_pairs = [(_tk("t1", "old"), Enrichment(new_title="New", summary="S"))]
+    result = run_review(
+        ["Training"],
+        apply=True,
+        read=lambda projs, rt, kt: ([_tk("t1", "old")], []),
+        review=lambda tasks: (list(reviewed_pairs), []),
+        apply_fn=lambda rv, rt, kt: ([], ["t1"]),   # write failed for t1
+    )
+    assert result["counts"]["reviewed"] == 0
+    assert result["counts"]["failed"] == 1
+    assert result["failed"][0]["id"] == "t1"
+    assert result["failed"][0]["error"] == "write failed"
+
+
+def test_run_review_reports_unresolved_projects():
+    result = run_review(
+        ["Ghost"],
+        apply=False,
+        read=lambda projs, rt, kt: ([], ["Ghost"]),
+        review=lambda tasks: ([], []),
+        apply_fn=lambda rv, rt, kt: ([], []),
+    )
+    assert result["unresolved"] == ["Ghost"]
+    assert result["counts"]["unresolved"] == 1
