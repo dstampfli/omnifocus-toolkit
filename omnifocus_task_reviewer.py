@@ -328,6 +328,46 @@ def format_report(reviewed, failed, unresolved, applied_names, dry_run):
     return "\n".join(lines)
 
 
+def _review_pipeline(projects, apply, read, review, apply_fn, review_tag, kanban_tag):
+    """Shared read -> review -> (optional) apply.
+
+    Returns (reviewed, failed, unresolved, applied_names). On write failure the
+    affected task moves from `reviewed` to `failed`, matching the CLI today."""
+    tasks, unresolved = read(projects, review_tag, kanban_tag)
+    reviewed, failed = review(tasks)
+    applied_names = []
+    if apply and reviewed:
+        applied_names, write_failed_ids = apply_fn(reviewed, review_tag, kanban_tag)
+        if write_failed_ids:
+            failed_set = set(write_failed_ids)
+            for task, enrichment in reviewed:
+                if task["id"] in failed_set:
+                    failed.append((task, "write failed"))
+            reviewed = [(t, e) for t, e in reviewed if t["id"] not in failed_set]
+    return reviewed, failed, unresolved, applied_names
+
+
+def run_review(projects, apply=False, *, read=read_project_tasks,
+               review=review_tasks, apply_fn=apply_enrichments,
+               review_tag=REVIEW_TAG, kanban_tag=KANBAN_TAG):
+    """Review not-yet-reviewed tasks in the named project(s) and return a
+    structured, JSON-serializable result. Dry-run by default."""
+    reviewed, failed, unresolved, applied_names = _review_pipeline(
+        projects, apply, read, review, apply_fn, review_tag, kanban_tag)
+    return {
+        "dry_run": not apply,
+        "reviewed": [{"id": t["id"], "old_name": t["name"],
+                      "new_title": e.new_title, "summary": e.summary}
+                     for t, e in reviewed],
+        "applied": applied_names,
+        "failed": [{"id": t["id"], "name": t["name"], "error": err}
+                   for t, err in failed],
+        "unresolved": unresolved,
+        "counts": {"reviewed": len(reviewed), "applied": len(applied_names),
+                   "failed": len(failed), "unresolved": len(unresolved)},
+    }
+
+
 def main(argv):
     projects, apply = parse_args(argv)
     if not projects:
@@ -335,18 +375,9 @@ def main(argv):
               file=sys.stderr)
         return 2
 
-    tasks, unresolved = read_project_tasks(projects, REVIEW_TAG, KANBAN_TAG)
-    reviewed, failed = review_tasks(tasks)
-
-    applied_names = []
-    if apply and reviewed:
-        applied_names, write_failed_ids = apply_enrichments(reviewed, REVIEW_TAG, KANBAN_TAG)
-        if write_failed_ids:
-            failed_set = set(write_failed_ids)
-            for task, enrichment in reviewed:
-                if task["id"] in failed_set:
-                    failed.append((task, "write failed"))
-            reviewed = [(t, e) for t, e in reviewed if t["id"] not in failed_set]
+    reviewed, failed, unresolved, applied_names = _review_pipeline(
+        projects, apply, read_project_tasks, review_tasks, apply_enrichments,
+        REVIEW_TAG, KANBAN_TAG)
 
     print(format_report(reviewed, failed, unresolved, applied_names, dry_run=not apply))
     return 1 if (failed or unresolved) else 0

@@ -408,31 +408,67 @@ def format_report(to_move, to_leave, items, dry_run, failed_ids=None):
     return "\n".join(lines)
 
 
+def _triage_pipeline(apply, read, classify, apply_fn):
+    """Shared read -> classify -> partition -> (optional) apply.
+
+    Returns (items, to_move, to_leave, failed_ids) — the raw pieces both the
+    CLI report and the structured result are built from. Skips classification
+    entirely when the inbox is empty (no wasted API call)."""
+    items, projects = read()
+    if not items:
+        return items, [], [], []
+    classification = classify(items, projects)
+    item_ids = [i["id"] for i in items]
+    project_ids = [p["id"] for p in projects]
+    to_move, to_leave = partition_decisions(classification.decisions, item_ids, project_ids)
+    failed_ids = []
+    if apply and to_move:
+        _, failed_ids = apply_fn(to_move)
+    return items, to_move, to_leave, failed_ids
+
+
+def _decision_dict(d, names):
+    return {
+        "id": d.item_id,
+        "name": names.get(d.item_id, d.item_id),
+        "project": d.project_name,
+        "project_id": d.project_id,
+        "confidence": d.confidence,
+        "reason": d.reason,
+    }
+
+
+def run_triage(apply=False, *, read=read_omnifocus,
+               classify=classify_in_batches, apply_fn=apply_moves):
+    """Triage the Inbox and return a structured, JSON-serializable result.
+
+    Dry-run by default; pass apply=True to move high-confidence matches."""
+    items, to_move, to_leave, failed_ids = _triage_pipeline(apply, read, classify, apply_fn)
+    names = {i["id"]: i["name"] for i in items}
+    failed_set = set(failed_ids)
+    moved = [_decision_dict(d, names) for d in to_move if d.item_id not in failed_set]
+    failed = [_decision_dict(d, names) for d in to_move if d.item_id in failed_set]
+    left = [_decision_dict(d, names) for d in to_leave]
+    return {
+        "dry_run": not apply,
+        "moved": moved,
+        "left": left,
+        "failed": failed,
+        "counts": {"inbox": len(items), "moved": len(moved),
+                   "left": len(left), "failed": len(failed)},
+    }
+
+
 def main():
     apply = "--apply" in sys.argv
-    dry_run = not apply
-
-    items, projects = read_omnifocus()
+    items, to_move, to_leave, failed_ids = _triage_pipeline(
+        apply, read_omnifocus, classify_in_batches, apply_moves)
     if not items:
         print('No inbox tasks to triage.')
         return 0
-
-    classification = classify_in_batches(items, projects)
-    item_ids = [i["id"] for i in items]
-    project_ids = [p["id"] for p in projects]
-    to_move, to_leave = partition_decisions(
-        classification.decisions, item_ids, project_ids
-    )
-
-    if apply and to_move:
-        _, failed = apply_moves(to_move)
-        if failed:
-            print(f"Warning: {len(failed)} move(s) failed: {failed}", file=sys.stderr)
-    else:
-        failed = []
-
-    print(format_report(to_move, to_leave, items, dry_run=dry_run, failed_ids=failed))
-    return 1 if failed else 0
+    print(format_report(to_move, to_leave, items,
+                        dry_run=not apply, failed_ids=failed_ids))
+    return 1 if failed_ids else 0
 
 
 if __name__ == "__main__":
