@@ -116,3 +116,36 @@ python omnifocus_task_reviewer.py "Training" --apply    # write: rename, append 
 Uses the same `.env` and Anthropic key as the triage tool, plus `REVIEW_TAG` and
 `WEB_FETCH_MAX_USES`. Requires a web_fetch-capable model (the `claude-sonnet-5`
 default).
+
+## MCP server (Claude Desktop / Cowork)
+
+`omnifocus_mcp_server.py` is a local **stdio** MCP server (built on `mcp[cli]`
+/ FastMCP) that exposes the AI-driven tools to a scheduled Claude Cowork task
+running inside Claude Desktop on this Mac. There is no network transport, auth,
+or tunnel — Claude Desktop launches the server as a local subprocess and speaks
+MCP to it over stdio.
+
+Tools:
+
+- `triage_inbox(apply=false)` — classify open Inbox tasks; with `apply=true`,
+  move high-confidence matches into their project.
+- `review_tasks(projects, apply=false)` — enrich not-yet-reviewed tasks in the
+  named project(s); with `apply=true`, write changes and tag them reviewed.
+- `omnifocus_status()` — read-only Inbox/active-project counts (no API call), so
+  a scheduled agent can decide whether to act before spending tokens.
+
+`apply` defaults to `false` everywhere: a scheduled agent must explicitly pass
+`apply=true` to change OmniFocus, mirroring the CLI's dry-run-by-default model.
+
+### Claude Desktop configuration
+
+Add a Local MCP server under **Settings → Developer → Local MCP servers**:
+
+- Command: `/opt/homebrew/bin/uv`
+- Arguments:
+  `run --with mcp[cli] --with-editable /path/to/omnifocus-toolkit mcp run /path/to/omnifocus-toolkit/omnifocus_mcp_server.py`
+
+The first run prompts macOS to allow **Claude Desktop** to control OmniFocus
+(System Settings → Privacy & Security → Automation). `ANTHROPIC_API_KEY` is read
+from the repo's `.env` (loaded relative to the server file, so the launch cwd
+does not matter).
