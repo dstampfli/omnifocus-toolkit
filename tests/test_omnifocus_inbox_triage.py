@@ -244,3 +244,59 @@ def test_load_config_rejects_non_positive_chunk_size(monkeypatch):
     monkeypatch.setenv("CHUNK_SIZE", "0")
     with pytest.raises(SystemExit):
         _load_config()
+
+
+from omnifocus_inbox_triage import run_triage, Classification
+
+
+def test_run_triage_dry_run_builds_moved_and_left():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""},
+             {"id": "t2", "name": "Idea", "note": ""}]
+    decisions = Classification(decisions=[
+        Decision(item_id="t1", project_id="p1", project_name="Pets",
+                 confidence="high", reason="cat"),
+        Decision(item_id="t2", project_id=None, project_name="",
+                 confidence="low", reason="unclear"),
+    ])
+    result = run_triage(
+        apply=False,
+        read=lambda: (items, [_proj()]),
+        classify=lambda i, p: decisions,
+        apply_fn=lambda m: ([], []),
+    )
+    assert result["dry_run"] is True
+    assert result["counts"] == {"inbox": 2, "moved": 1, "left": 1, "failed": 0}
+    assert result["moved"][0]["id"] == "t1"
+    assert result["moved"][0]["name"] == "Vet appt"
+    assert result["moved"][0]["project"] == "Pets"
+    assert result["left"][0]["id"] == "t2"
+
+
+def test_run_triage_apply_reports_failed_moves():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""}]
+    decisions = Classification(decisions=[
+        Decision(item_id="t1", project_id="p1", project_name="Pets",
+                 confidence="high", reason="cat")])
+    result = run_triage(
+        apply=True,
+        read=lambda: (items, [_proj()]),
+        classify=lambda i, p: decisions,
+        apply_fn=lambda m: ([], ["t1"]),   # t1 failed to move
+    )
+    assert result["dry_run"] is False
+    assert result["counts"]["moved"] == 0
+    assert result["counts"]["failed"] == 1
+    assert result["failed"][0]["id"] == "t1"
+
+
+def test_run_triage_empty_inbox_skips_classify():
+    called = []
+    result = run_triage(
+        apply=False,
+        read=lambda: ([], []),
+        classify=lambda i, p: called.append(1),
+        apply_fn=lambda m: ([], []),
+    )
+    assert called == []          # classify never invoked on empty inbox
+    assert result["counts"]["inbox"] == 0
+    assert result["moved"] == [] and result["left"] == []
