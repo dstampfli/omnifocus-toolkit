@@ -42,9 +42,10 @@ nothing. Pass `--apply` to actually move the matched tasks.
 **Guide the classifier with project descriptions.** The model reads each
 project's **OmniFocus note** as a description of what belongs there, and that
 description takes precedence over the project name. Adding a one-line note to
-each project (e.g. *"Me — personal: repairs, appliances, utilities"*) markedly
-improves accuracy, since names alone are often ambiguous (two similarly-named projects).
-Projects with no note fall back to name and folder path.
+each project (e.g. *"Home — repairs, appliances, utilities, insurance"*)
+markedly improves accuracy, since names alone are often ambiguous (e.g. a
+one-word project name shared with an unrelated topic). Projects with no note
+fall back to name and folder path.
 
 ```bash
 uv run python omnifocus_inbox_triage.py            # dry-run: classify and report, change nothing
@@ -113,8 +114,8 @@ Tools:
 
 Add a Local MCP server under **Settings → Developer → Local MCP servers**:
 
-- Command: `/opt/homebrew/bin/uv`
-- Arguments:
+- Command: the absolute path to your `uv` (e.g. `/opt/homebrew/bin/uv` — run `which uv` to find yours)
+- Arguments (replace `/path/to/omnifocus-toolkit` with this repo's absolute path on your machine):
   `run --with mcp[cli] --with-editable /path/to/omnifocus-toolkit mcp run /path/to/omnifocus-toolkit/omnifocus_mcp_server.py`
 
 The first run prompts macOS to allow **Claude Desktop** to control OmniFocus
