@@ -59,7 +59,7 @@ def test_list_projects_returns_slim_projects(monkeypatch):
     projects = [
         {"id": "p1", "name": "Training", "folderPath": "Work ▸ Growth",
          "description": "Courses and learning material", "status": "active"},
-        {"id": "p2", "name": "Me", "description": "", "status": "active"},
+        {"id": "p2", "name": "Personal", "description": "", "status": "active"},
     ]
     monkeypatch.setattr(server.triage, "read_omnifocus",
                         lambda: ([], projects))
@@ -68,7 +68,7 @@ def test_list_projects_returns_slim_projects(monkeypatch):
         "projects": [
             {"id": "p1", "name": "Training", "folderPath": "Work ▸ Growth",
              "description": "Courses and learning material"},
-            {"id": "p2", "name": "Me", "folderPath": "", "description": ""},
+            {"id": "p2", "name": "Personal", "folderPath": "", "description": ""},
         ],
         "count": 2,
     }

@@ -104,6 +104,9 @@ Tools:
   move high-confidence matches into their project.
 - `review_tasks(projects, apply=false)` — enrich not-yet-reviewed tasks in the
   named project(s); with `apply=true`, write changes and tag them reviewed.
+- `list_projects()` — read-only list of your active projects (id, name, folder
+  path, description), so an agent can discover project names dynamically (e.g. to
+  fan `review_tasks` out over every active project).
 - `omnifocus_status()` — read-only Inbox/active-project counts (no API call), so
   a scheduled agent can decide whether to act before spending tokens.
 
