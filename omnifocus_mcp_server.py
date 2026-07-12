@@ -52,6 +52,29 @@ def review_tasks(projects: list[str], apply: bool = False) -> dict:
 
 
 @mcp.tool()
+def list_projects() -> dict:
+    """Read-only. List the user's active OmniFocus projects — id, name, folder
+    path, and the project's note (its triage description) — so an agent can
+    discover project names dynamically (e.g. to pass to review_tasks)."""
+    try:
+        _, projects = triage.read_omnifocus()
+        return {
+            "projects": [
+                {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "folderPath": p.get("folderPath", ""),
+                    "description": p.get("description", ""),
+                }
+                for p in projects
+            ],
+            "count": len(projects),
+        }
+    except Exception as e:
+        return {"error": f"list_projects failed: {e}"}
+
+
+@mcp.tool()
 def omnifocus_status() -> dict:
     """Read-only. Report the number of open Inbox tasks and active projects, so
     a scheduled agent can cheaply decide whether to act before triaging."""

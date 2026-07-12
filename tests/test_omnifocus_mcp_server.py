@@ -53,3 +53,30 @@ def test_omnifocus_status_wraps_errors(monkeypatch):
     monkeypatch.setattr(server.triage, "read_omnifocus", boom)
     out = server.omnifocus_status()
     assert "error" in out and "read failed" in out["error"]
+
+
+def test_list_projects_returns_slim_projects(monkeypatch):
+    projects = [
+        {"id": "p1", "name": "Training", "folderPath": "Work ▸ Growth",
+         "description": "Courses and learning material", "status": "active"},
+        {"id": "p2", "name": "Me", "description": "", "status": "active"},
+    ]
+    monkeypatch.setattr(server.triage, "read_omnifocus",
+                        lambda: ([], projects))
+    out = server.list_projects()
+    assert out == {
+        "projects": [
+            {"id": "p1", "name": "Training", "folderPath": "Work ▸ Growth",
+             "description": "Courses and learning material"},
+            {"id": "p2", "name": "Me", "folderPath": "", "description": ""},
+        ],
+        "count": 2,
+    }
+
+
+def test_list_projects_wraps_errors(monkeypatch):
+    def boom():
+        raise RuntimeError("no omnifocus")
+    monkeypatch.setattr(server.triage, "read_omnifocus", boom)
+    out = server.list_projects()
+    assert "error" in out and "no omnifocus" in out["error"]
