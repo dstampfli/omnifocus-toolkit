@@ -8,7 +8,6 @@ source. All network/parse errors degrade to None; nothing here raises.
 
 import json
 import re
-import urllib.error
 import urllib.request
 from typing import List, Optional
 
@@ -61,15 +60,15 @@ def fetch_post_text(tweet_id: str, token: str, *, timeout: int = 20) -> Optional
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             payload = json.load(r)
+        data = payload.get("data") or {}
+        text = (data.get("note_tweet") or {}).get("text") or data.get("text") or ""
+        text = text.strip()
+        if not text:
+            return None
+        who = _format_author((payload.get("includes") or {}).get("users") or [])
+        return f"X post by {who}: {text}" if who else f"X post: {text}"
     except Exception:  # noqa: BLE001 — network/HTTP/parse all degrade to None
         return None
-    data = payload.get("data") or {}
-    text = (data.get("note_tweet") or {}).get("text") or data.get("text") or ""
-    text = text.strip()
-    if not text:
-        return None
-    who = _format_author((payload.get("includes") or {}).get("users") or [])
-    return f"X post by {who}: {text}" if who else f"X post: {text}"
 
 
 class XPostFetcher:
