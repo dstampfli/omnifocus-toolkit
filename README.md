@@ -70,6 +70,11 @@ uv run python omnifocus_inbox_triage.py --apply    # classify, then move high-co
   larger or unsupported attachments are skipped, with their filename kept as a
   hint. `MAX_BATCH_ATTACHMENT_BYTES` bounds per-call attachment bytes and
   `MAX_NOTE_CHARS` truncates long notes.
+- **X (Twitter) posts.** If a task links an X post, triage can't read it by
+  default (X is login-walled). Set `X_BEARER_TOKEN` to an X API v2 App-only
+  Bearer Token and triage fetches the post's text (author + full text) and feeds
+  it to the classifier. Optional — omit the token to skip. `X_FETCH_MAX_USES`
+  (default 25) caps lookups per run to protect your X API quota.
 
 ## Task reviewer (`omnifocus_task_reviewer.py`)
 
