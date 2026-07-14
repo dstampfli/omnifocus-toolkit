@@ -87,8 +87,7 @@ class XPostFetcher:
         if not self.token:
             return []
         out: List[str] = []
-        for m in _STATUS_RE.finditer(text or ""):
-            tid = m.group(1)
+        for tid in extract_tweet_ids(text):
             if tid not in self.cache:
                 if self.used >= self.max_uses:
                     continue

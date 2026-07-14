@@ -44,7 +44,7 @@ def test_fetcher_returns_texts_and_dedupes(monkeypatch):
         return f"POST {tid}"
     f = XPostFetcher("tok", 25, fetch_fn=fake)
     out = f.texts_for("x.com/a/status/1 x.com/b/status/2 x.com/c/status/1")
-    assert out == ["POST 1", "POST 2", "POST 1"]   # id 1 reused from cache
+    assert out == ["POST 1", "POST 2"]              # each unique id once
     assert calls == ["1", "2"]                       # fetched once per unique id
     assert f.used == 2
 
