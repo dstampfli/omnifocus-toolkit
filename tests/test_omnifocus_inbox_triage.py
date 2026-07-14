@@ -199,15 +199,31 @@ def test_format_report_failed_move_not_labeled_moved():
 
 def test_load_config_defaults(monkeypatch):
     for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE",
-              "MAX_ATTACHMENT_BYTES", "MAX_BATCH_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
+              "MAX_ATTACHMENT_BYTES", "MAX_BATCH_ATTACHMENT_BYTES", "MAX_NOTE_CHARS",
+              "X_BEARER_TOKEN", "X_FETCH_MAX_USES"):
         monkeypatch.delenv(k, raising=False)
-    model, conf, chunk, max_att, max_batch, max_note = _load_config()
+    model, conf, chunk, max_att, max_batch, max_note, x_token, x_max = _load_config()
     assert model == "claude-sonnet-5"
     assert conf == "high"
     assert chunk == 25
     assert max_att == 10485760
     assert max_batch == 20971520
     assert max_note == 4000
+    assert x_token is None
+    assert x_max == 25
+
+
+def test_load_config_x_token_stripped_or_none(monkeypatch):
+    monkeypatch.setenv("X_BEARER_TOKEN", "   ")
+    assert _load_config()[6] is None            # whitespace-only -> None
+    monkeypatch.setenv("X_BEARER_TOKEN", "  abc ")
+    assert _load_config()[6] == "abc"           # trimmed
+
+
+def test_load_config_rejects_bad_x_fetch_max(monkeypatch):
+    monkeypatch.setenv("X_FETCH_MAX_USES", "none")
+    with pytest.raises(SystemExit):
+        _load_config()
 
 
 def test_load_config_rejects_bad_attachment_cap(monkeypatch):
@@ -224,7 +240,7 @@ def test_load_config_rejects_non_positive_note_cap(monkeypatch):
 
 def test_load_config_normalizes_confidence_case(monkeypatch):
     monkeypatch.setenv("MOVE_MIN_CONFIDENCE", "Medium")
-    _, conf, _, _, _, _ = _load_config()
+    _, conf, _, _, _, _, _, _ = _load_config()
     assert conf == "medium"
 
 

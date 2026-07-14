@@ -43,7 +43,12 @@ def _load_config():
     max_batch = _positive_int_env("MAX_BATCH_ATTACHMENT_BYTES", "20971520")  # 20 MiB per call
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")      # cleaned-note truncation
 
-    return model, min_conf, chunk, max_att, max_batch, max_note
+    # Optional X (Twitter) API v2 Bearer Token; empty/unset -> None disables X
+    # fetching. X_FETCH_MAX_USES caps X post lookups per run (protects quota).
+    x_token = os.environ.get("X_BEARER_TOKEN", "").strip() or None
+    x_max_uses = _positive_int_env("X_FETCH_MAX_USES", "25")
+
+    return model, min_conf, chunk, max_att, max_batch, max_note, x_token, x_max_uses
 
 
 (
@@ -53,6 +58,8 @@ def _load_config():
     MAX_ATTACHMENT_BYTES,
     MAX_BATCH_ATTACHMENT_BYTES,
     MAX_NOTE_CHARS,
+    X_BEARER_TOKEN,
+    X_FETCH_MAX_USES,
 ) = _load_config()
 # --------------------------------------------------------------------------
 
