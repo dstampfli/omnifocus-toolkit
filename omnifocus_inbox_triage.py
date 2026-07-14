@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from omnifocus_common import build_task_content, fetch_attachment_b64, media_type_for, _positive_int_env
+from omnifocus_x import XPostFetcher
 
 # Load a local .env (if present) so ANTHROPIC_API_KEY and the settings below can
 # live there instead of the shell/profile. Absent .env is a harmless no-op.
@@ -242,7 +243,8 @@ def build_system_prompt():
     )
 
 
-def build_user_message(items, projects, fetch_bytes, max_bytes, max_note_chars):
+def build_user_message(items, projects, fetch_bytes, max_bytes, max_note_chars,
+                       x_fetcher=None):
     # The model message is an ordered list of content blocks: a leading text
     # block with the project taxonomy (internal `status` filtered out), then each
     # item's blocks (text header + any attachment vision blocks).
@@ -260,7 +262,15 @@ def build_user_message(items, projects, fetch_bytes, max_bytes, max_note_chars):
         "text": "PROJECTS:\n" + json.dumps({"projects": slim_projects}, ensure_ascii=False),
     }]
     for item in items:
-        content.extend(build_task_content(item, fetch_bytes, max_bytes, max_note_chars))
+        blocks = build_task_content(item, fetch_bytes, max_bytes, max_note_chars)
+        if x_fetcher is not None:
+            # blocks[0] is the item's text header (name + note + any web links);
+            # extract tweet ids from it so both note-embedded and .webloc URLs
+            # are covered without re-reading attachment bytes.
+            x_texts = x_fetcher.texts_for(blocks[0]["text"])
+            if x_texts:
+                blocks[0]["text"] += "\nLinked X post(s):\n" + "\n".join(x_texts)
+        content.extend(blocks)
     return content
 
 
@@ -286,10 +296,11 @@ def batch_items_by_size(items, chunk_size, max_bytes, max_batch_bytes):
         yield batch
 
 
-def classify(items, projects):
+def classify(items, projects, x_fetcher=None):
     client = anthropic.Anthropic()
     content = build_user_message(
-        items, projects, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
+        items, projects, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS,
+        x_fetcher=x_fetcher,
     )
     try:
         response = client.messages.parse(
@@ -308,11 +319,12 @@ def classify(items, projects):
 
 
 def classify_in_batches(items, projects, chunk_size=CHUNK_SIZE):
+    x_fetcher = XPostFetcher(X_BEARER_TOKEN, X_FETCH_MAX_USES) if X_BEARER_TOKEN else None
     decisions = []
     for batch in batch_items_by_size(
         items, chunk_size, MAX_ATTACHMENT_BYTES, MAX_BATCH_ATTACHMENT_BYTES
     ):
-        result = classify(batch, projects)
+        result = classify(batch, projects, x_fetcher=x_fetcher)
         decisions.extend(result.decisions)
     return Classification(decisions=decisions)
 

@@ -316,3 +316,30 @@ def test_run_triage_empty_inbox_skips_classify():
     assert called == []          # classify never invoked on empty inbox
     assert result["counts"]["inbox"] == 0
     assert result["moved"] == [] and result["left"] == []
+
+
+from omnifocus_inbox_triage import build_user_message
+from omnifocus_x import XPostFetcher
+
+
+def _no_bytes(task_id, index):
+    return None
+
+
+def test_build_user_message_appends_x_post_text():
+    items = [{"id": "t1", "name": "read this",
+              "note": "https://x.com/jack/status/20", "attachments": []}]
+    projects = [{"id": "p1", "name": "Reading", "folderPath": "", "description": ""}]
+    fetcher = XPostFetcher("tok", 25, fetch_fn=lambda tid, tok: f"X post by jack (@jack): hi {tid}")
+    content = build_user_message(items, projects, _no_bytes, 1000, 4000, x_fetcher=fetcher)
+    header = content[1]["text"]   # content[0] is the PROJECTS block
+    assert "Linked X post(s):" in header
+    assert "X post by jack (@jack): hi 20" in header
+
+
+def test_build_user_message_no_fetcher_unchanged():
+    items = [{"id": "t1", "name": "read this",
+              "note": "https://x.com/jack/status/20", "attachments": []}]
+    projects = [{"id": "p1", "name": "Reading", "folderPath": "", "description": ""}]
+    content = build_user_message(items, projects, _no_bytes, 1000, 4000)
+    assert "Linked X post(s):" not in content[1]["text"]
