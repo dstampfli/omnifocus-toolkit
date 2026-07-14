@@ -199,15 +199,31 @@ def test_format_report_failed_move_not_labeled_moved():
 
 def test_load_config_defaults(monkeypatch):
     for k in ("MODEL", "MOVE_MIN_CONFIDENCE", "CHUNK_SIZE",
-              "MAX_ATTACHMENT_BYTES", "MAX_BATCH_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
+              "MAX_ATTACHMENT_BYTES", "MAX_BATCH_ATTACHMENT_BYTES", "MAX_NOTE_CHARS",
+              "X_BEARER_TOKEN", "X_FETCH_MAX_USES"):
         monkeypatch.delenv(k, raising=False)
-    model, conf, chunk, max_att, max_batch, max_note = _load_config()
+    model, conf, chunk, max_att, max_batch, max_note, x_token, x_max = _load_config()
     assert model == "claude-sonnet-5"
     assert conf == "high"
     assert chunk == 25
     assert max_att == 10485760
     assert max_batch == 20971520
     assert max_note == 4000
+    assert x_token is None
+    assert x_max == 25
+
+
+def test_load_config_x_token_stripped_or_none(monkeypatch):
+    monkeypatch.setenv("X_BEARER_TOKEN", "   ")
+    assert _load_config()[6] is None            # whitespace-only -> None
+    monkeypatch.setenv("X_BEARER_TOKEN", "  abc ")
+    assert _load_config()[6] == "abc"           # trimmed
+
+
+def test_load_config_rejects_bad_x_fetch_max(monkeypatch):
+    monkeypatch.setenv("X_FETCH_MAX_USES", "none")
+    with pytest.raises(SystemExit):
+        _load_config()
 
 
 def test_load_config_rejects_bad_attachment_cap(monkeypatch):
@@ -224,7 +240,7 @@ def test_load_config_rejects_non_positive_note_cap(monkeypatch):
 
 def test_load_config_normalizes_confidence_case(monkeypatch):
     monkeypatch.setenv("MOVE_MIN_CONFIDENCE", "Medium")
-    _, conf, _, _, _, _ = _load_config()
+    _, conf, _, _, _, _, _, _ = _load_config()
     assert conf == "medium"
 
 
@@ -300,3 +316,30 @@ def test_run_triage_empty_inbox_skips_classify():
     assert called == []          # classify never invoked on empty inbox
     assert result["counts"]["inbox"] == 0
     assert result["moved"] == [] and result["left"] == []
+
+
+from omnifocus_inbox_triage import build_user_message
+from omnifocus_x import XPostFetcher
+
+
+def _no_bytes(task_id, index):
+    return None
+
+
+def test_build_user_message_appends_x_post_text():
+    items = [{"id": "t1", "name": "read this",
+              "note": "https://x.com/jack/status/20", "attachments": []}]
+    projects = [{"id": "p1", "name": "Reading", "folderPath": "", "description": ""}]
+    fetcher = XPostFetcher("tok", 25, fetch_fn=lambda tid, tok: f"X post by jack (@jack): hi {tid}")
+    content = build_user_message(items, projects, _no_bytes, 1000, 4000, x_fetcher=fetcher)
+    header = content[1]["text"]   # content[0] is the PROJECTS block
+    assert "Linked X post(s):" in header
+    assert "X post by jack (@jack): hi 20" in header
+
+
+def test_build_user_message_no_fetcher_unchanged():
+    items = [{"id": "t1", "name": "read this",
+              "note": "https://x.com/jack/status/20", "attachments": []}]
+    projects = [{"id": "p1", "name": "Reading", "folderPath": "", "description": ""}]
+    content = build_user_message(items, projects, _no_bytes, 1000, 4000)
+    assert "Linked X post(s):" not in content[1]["text"]

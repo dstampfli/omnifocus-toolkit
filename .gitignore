@@ -12,6 +12,8 @@ wheels/
 # Local secrets / config (keep .env.example tracked)
 .env
 
-# Local agent working files (task ledgers, scratch issues) — never publish
+# Local agent working files (task ledgers, scratch issues, design docs) — never publish
 .superpowers/
 .scratch/
+docs/superpowers/
+docs/agents/
