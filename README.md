@@ -85,6 +85,12 @@ and reads its attachments, then sets a clearer title and appends a `--- Summary
 `reviewed`) so re-runs skip them. Non-destructive: the original note, URL, and
 attachments are preserved.
 
+Like triage, the reviewer can read linked **X (Twitter)** posts: set
+`X_BEARER_TOKEN` (the same X API v2 token triage uses) and it fetches the post's
+text so an X-linked task gets a real title and summary instead of failing on X's
+login wall. Optional — omit the token to skip. Lookups are deduped and capped per
+run by `X_FETCH_MAX_USES` (default 25), a quota shared with triage.
+
 ```bash
 uv run python omnifocus_task_reviewer.py "Training"            # dry-run: show proposed enrichments
 uv run python omnifocus_task_reviewer.py "Training" "Tech"     # multiple projects
