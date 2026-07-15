@@ -5,7 +5,7 @@ AI-assisted automation for **OmniFocus**, powered by the Claude API:
 - **Inbox triage** — classify open Inbox tasks against your active projects and
   move confident matches into place.
 - **Task reviewer** — enrich not-yet-reviewed tasks in named projects with a
-  clearer title and a summary of any linked page or attachment.
+  clearer title and a summary of any linked page, X post, or attachment.
 - **MCP server** — expose both tools to Claude Desktop / Cowork so a scheduled
   agent can run them for you.
 
