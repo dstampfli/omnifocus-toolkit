@@ -27,15 +27,32 @@ def test_parse_args_no_projects():
 
 def test_load_config_defaults(monkeypatch):
     for k in ("MODEL", "REVIEW_TAG", "KANBAN_TAG", "WEB_FETCH_MAX_USES",
-              "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
+              "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS",
+              "X_BEARER_TOKEN", "X_FETCH_MAX_USES"):
         monkeypatch.delenv(k, raising=False)
-    model, tag, kanban, fetches, max_att, max_note = _load_config()
+    (model, tag, kanban, fetches, max_att, max_note,
+     x_token, x_max) = _load_config()
     assert model == "claude-sonnet-5"
     assert tag == "reviewed"
     assert kanban == "Kanban"
     assert fetches == 3
     assert max_att == 10485760
     assert max_note == 4000
+    assert x_token is None
+    assert x_max == 25
+
+
+def test_load_config_x_token_stripped_or_none(monkeypatch):
+    monkeypatch.setenv("X_BEARER_TOKEN", "   ")
+    assert _load_config()[6] is None            # whitespace-only -> None
+    monkeypatch.setenv("X_BEARER_TOKEN", "  abc ")
+    assert _load_config()[6] == "abc"           # trimmed
+
+
+def test_load_config_rejects_bad_x_fetch_max(monkeypatch):
+    monkeypatch.setenv("X_FETCH_MAX_USES", "none")
+    with pytest.raises(SystemExit):
+        _load_config()
 
 
 def test_load_config_rejects_bad_fetch_uses(monkeypatch):

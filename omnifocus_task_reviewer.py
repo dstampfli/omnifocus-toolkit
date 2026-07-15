@@ -36,10 +36,18 @@ def _load_config():
     fetches = _positive_int_env("WEB_FETCH_MAX_USES", "3")
     max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
-    return model, tag, kanban, fetches, max_att, max_note
+
+    # Optional X (Twitter) API v2 Bearer Token — reused from the triage tool
+    # (same env vars). Empty/unset -> None disables X fetching. X_FETCH_MAX_USES
+    # caps X post lookups per review run (protects the shared X API quota).
+    x_token = os.environ.get("X_BEARER_TOKEN", "").strip() or None
+    x_max_uses = _positive_int_env("X_FETCH_MAX_USES", "25")
+
+    return model, tag, kanban, fetches, max_att, max_note, x_token, x_max_uses
 
 
-MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS = _load_config()
+(MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES,
+ MAX_NOTE_CHARS, X_BEARER_TOKEN, X_FETCH_MAX_USES) = _load_config()
 # --------------------------------------------------------------------------
 
 
