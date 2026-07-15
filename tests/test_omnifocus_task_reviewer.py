@@ -27,15 +27,32 @@ def test_parse_args_no_projects():
 
 def test_load_config_defaults(monkeypatch):
     for k in ("MODEL", "REVIEW_TAG", "KANBAN_TAG", "WEB_FETCH_MAX_USES",
-              "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS"):
+              "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS",
+              "X_BEARER_TOKEN", "X_FETCH_MAX_USES"):
         monkeypatch.delenv(k, raising=False)
-    model, tag, kanban, fetches, max_att, max_note = _load_config()
+    (model, tag, kanban, fetches, max_att, max_note,
+     x_token, x_max) = _load_config()
     assert model == "claude-sonnet-5"
     assert tag == "reviewed"
     assert kanban == "Kanban"
     assert fetches == 3
     assert max_att == 10485760
     assert max_note == 4000
+    assert x_token is None
+    assert x_max == 25
+
+
+def test_load_config_x_token_stripped_or_none(monkeypatch):
+    monkeypatch.setenv("X_BEARER_TOKEN", "   ")
+    assert _load_config()[6] is None            # whitespace-only -> None
+    monkeypatch.setenv("X_BEARER_TOKEN", "  abc ")
+    assert _load_config()[6] == "abc"           # trimmed
+
+
+def test_load_config_rejects_bad_x_fetch_max(monkeypatch):
+    monkeypatch.setenv("X_FETCH_MAX_USES", "none")
+    with pytest.raises(SystemExit):
+        _load_config()
 
 
 def test_load_config_rejects_bad_fetch_uses(monkeypatch):
@@ -74,7 +91,7 @@ def test_review_tasks_isolates_per_task_failures():
              {"id": "t2", "name": "two", "note": "", "attachments": []},
              {"id": "t3", "name": "three", "note": "", "attachments": []}]
 
-    def fake_review(task, client):
+    def fake_review(task, client, x_fetcher=None):
         if task["id"] == "t2":
             raise RuntimeError("boom")
         return Enrichment(new_title=task["name"].upper(), summary="s")
@@ -195,6 +212,52 @@ def test_run_review_dry_run_builds_reviewed():
     assert result["reviewed"][0]["old_name"] == "old"
     assert result["reviewed"][0]["new_title"] == "New"
     assert result["reviewed"][0]["summary"] == "S"
+
+
+from omnifocus_task_reviewer import review_task
+from omnifocus_x import XPostFetcher
+
+
+class _FakeMessages:
+    def __init__(self, captured):
+        self._captured = captured
+
+    def create(self, **kwargs):
+        self._captured["content"] = kwargs["messages"][0]["content"]
+
+        class _Block:
+            type = "text"
+            text = '{"new_title": "T", "summary": "S"}'
+
+        class _Resp:
+            content = [_Block()]
+
+        return _Resp()
+
+
+class _FakeClient:
+    def __init__(self, captured):
+        self.beta = type("B", (), {"messages": _FakeMessages(captured)})()
+
+
+def test_review_task_appends_x_post_text():
+    captured = {}
+    task = {"id": "t1", "name": "Post by X on X",
+            "note": "https://x.com/jack/status/20", "attachments": []}
+    fetcher = XPostFetcher("tok", 25, fetch_fn=lambda tid, tok: f"X post by jack (@jack): hi {tid}")
+    result = review_task(task, _FakeClient(captured), x_fetcher=fetcher)
+    header = captured["content"][0]["text"]
+    assert "Linked X post(s):" in header
+    assert "X post by jack (@jack): hi 20" in header
+    assert result.new_title == "T"
+
+
+def test_review_task_no_fetcher_unchanged():
+    captured = {}
+    task = {"id": "t1", "name": "Post by X on X",
+            "note": "https://x.com/jack/status/20", "attachments": []}
+    review_task(task, _FakeClient(captured))       # no x_fetcher
+    assert "Linked X post(s):" not in captured["content"][0]["text"]
 
 
 def test_run_review_apply_moves_write_failures_to_failed():

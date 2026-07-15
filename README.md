@@ -5,7 +5,7 @@ AI-assisted automation for **OmniFocus**, powered by the Claude API:
 - **Inbox triage** — classify open Inbox tasks against your active projects and
   move confident matches into place.
 - **Task reviewer** — enrich not-yet-reviewed tasks in named projects with a
-  clearer title and a summary of any linked page or attachment.
+  clearer title and a summary of any linked page, X post, or attachment.
 - **MCP server** — expose both tools to Claude Desktop / Cowork so a scheduled
   agent can run them for you.
 
@@ -84,6 +84,12 @@ and reads its attachments, then sets a clearer title and appends a `--- Summary
 ---` section to the note. Reviewed tasks are marked with a tag (default
 `reviewed`) so re-runs skip them. Non-destructive: the original note, URL, and
 attachments are preserved.
+
+Like triage, the reviewer can read linked **X (Twitter)** posts: set
+`X_BEARER_TOKEN` (the same X API v2 token triage uses) and it fetches the post's
+text so an X-linked task gets a real title and summary instead of failing on X's
+login wall. Optional — omit the token to skip. Lookups are deduped and capped per
+run by `X_FETCH_MAX_USES` (default 25), a quota shared with triage.
 
 ```bash
 uv run python omnifocus_task_reviewer.py "Training"            # dry-run: show proposed enrichments

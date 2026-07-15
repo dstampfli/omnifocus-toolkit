@@ -22,6 +22,7 @@ from omnifocus_common import (
     strip_medium_promo,
     _positive_int_env,
 )
+from omnifocus_x import XPostFetcher
 
 load_dotenv()
 
@@ -36,10 +37,18 @@ def _load_config():
     fetches = _positive_int_env("WEB_FETCH_MAX_USES", "3")
     max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
-    return model, tag, kanban, fetches, max_att, max_note
+
+    # Optional X (Twitter) API v2 Bearer Token — reused from the triage tool
+    # (same env vars). Empty/unset -> None disables X fetching. X_FETCH_MAX_USES
+    # caps X post lookups per review run (protects the shared X API quota).
+    x_token = os.environ.get("X_BEARER_TOKEN", "").strip() or None
+    x_max_uses = _positive_int_env("X_FETCH_MAX_USES", "25")
+
+    return model, tag, kanban, fetches, max_att, max_note, x_token, x_max_uses
 
 
-MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS = _load_config()
+(MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES,
+ MAX_NOTE_CHARS, X_BEARER_TOKEN, X_FETCH_MAX_USES) = _load_config()
 # --------------------------------------------------------------------------
 
 
@@ -157,10 +166,17 @@ def build_system_prompt():
     )
 
 
-def review_task(task, client):
+def review_task(task, client, x_fetcher=None):
     content = build_task_content(
         task, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
     )
+    if x_fetcher is not None:
+        # content[0] is the task's text header (name + note + any .webloc web
+        # links); extract tweet ids from it so both note-embedded and attachment
+        # X URLs are covered. Fetched text is model input only.
+        x_texts = x_fetcher.texts_for(content[0]["text"])
+        if x_texts:
+            content[0]["text"] += "\nLinked X post(s):\n" + "\n".join(x_texts)
     resp = client.beta.messages.create(
         model=MODEL,
         max_tokens=1024,
@@ -187,10 +203,11 @@ def review_tasks(tasks, review_fn=review_task):
     if not tasks:
         return [], []
     client = anthropic.Anthropic()
+    x_fetcher = XPostFetcher(X_BEARER_TOKEN, X_FETCH_MAX_USES) if X_BEARER_TOKEN else None
     reviewed, failed = [], []
     for task in tasks:
         try:
-            enrichment = review_fn(task, client)
+            enrichment = review_fn(task, client, x_fetcher=x_fetcher)
             reviewed.append((task, enrichment))
         except Exception as e:  # per-task isolation: never abort the whole run
             print(f"Review failed for {task.get('name', task.get('id'))!r}: {e}",
