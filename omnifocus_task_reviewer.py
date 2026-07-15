@@ -22,6 +22,7 @@ from omnifocus_common import (
     strip_medium_promo,
     _positive_int_env,
 )
+from omnifocus_x import XPostFetcher
 
 load_dotenv()
 
@@ -165,10 +166,17 @@ def build_system_prompt():
     )
 
 
-def review_task(task, client):
+def review_task(task, client, x_fetcher=None):
     content = build_task_content(
         task, fetch_attachment_b64, MAX_ATTACHMENT_BYTES, MAX_NOTE_CHARS
     )
+    if x_fetcher is not None:
+        # content[0] is the task's text header (name + note + any .webloc web
+        # links); extract tweet ids from it so both note-embedded and attachment
+        # X URLs are covered. Fetched text is model input only.
+        x_texts = x_fetcher.texts_for(content[0]["text"])
+        if x_texts:
+            content[0]["text"] += "\nLinked X post(s):\n" + "\n".join(x_texts)
     resp = client.beta.messages.create(
         model=MODEL,
         max_tokens=1024,
@@ -195,10 +203,11 @@ def review_tasks(tasks, review_fn=review_task):
     if not tasks:
         return [], []
     client = anthropic.Anthropic()
+    x_fetcher = XPostFetcher(X_BEARER_TOKEN, X_FETCH_MAX_USES) if X_BEARER_TOKEN else None
     reviewed, failed = [], []
     for task in tasks:
         try:
-            enrichment = review_fn(task, client)
+            enrichment = review_fn(task, client, x_fetcher=x_fetcher)
             reviewed.append((task, enrichment))
         except Exception as e:  # per-task isolation: never abort the whole run
             print(f"Review failed for {task.get('name', task.get('id'))!r}: {e}",
