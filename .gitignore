@@ -17,6 +17,3 @@ wheels/
 .scratch/
 docs/superpowers/
 docs/agents/
-
-# Draft forum announcement — not part of the published toolkit
-docs/forum-post.md
