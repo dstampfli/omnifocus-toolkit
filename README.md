@@ -13,6 +13,9 @@ Both tools read your OmniFocus data locally via `osascript` (JXA) and are
 **dry-run by default** — they report what they would do and change nothing until
 you pass `--apply`.
 
+**Discussion:** there's an announcement and Q&A thread on the OmniFocus forum —
+[omnifocus-toolkit — AI-assisted Inbox triage and task enrichment](https://discourse.omnigroup.com/t/omnifocus-toolkit-ai-assisted-inbox-triage-and-task-enrichment-open-source/71526).
+
 ## Requirements
 
 - macOS with OmniFocus 3/4 installed
