@@ -26,14 +26,28 @@ def test_triage_inbox_wraps_errors(monkeypatch):
 
 
 def test_review_tasks_passes_through(monkeypatch):
-    monkeypatch.setattr(server.reviewer, "run_review",
-                        lambda projects, apply=False: {"projects": projects, "apply": apply})
-    assert server.review_tasks(["Training"], apply=True) == {
-        "projects": ["Training"], "apply": True}
+    monkeypatch.setattr(
+        server.reviewer, "run_review",
+        lambda projects, apply=False, max_tasks=None: {
+            "projects": projects, "apply": apply, "max_tasks": max_tasks})
+    assert server.review_tasks(["Training"], apply=True, max_tasks=3) == {
+        "projects": ["Training"], "apply": True, "max_tasks": 3}
+
+
+def test_review_tasks_defaults_max_tasks(monkeypatch):
+    seen = {}
+
+    def fake(projects, apply=False, max_tasks=None):
+        seen["max_tasks"] = max_tasks
+        return {}
+    monkeypatch.setattr(server.reviewer, "run_review", fake)
+    server.review_tasks(["Training"])
+    assert seen["max_tasks"] == server.DEFAULT_MAX_TASKS
+    assert isinstance(server.DEFAULT_MAX_TASKS, int) and server.DEFAULT_MAX_TASKS > 0
 
 
 def test_review_tasks_wraps_errors(monkeypatch):
-    def boom(projects, apply=False):
+    def boom(projects, apply=False, max_tasks=None):
         raise RuntimeError("bad")
     monkeypatch.setattr(server.reviewer, "run_review", boom)
     out = server.review_tasks(["Training"])

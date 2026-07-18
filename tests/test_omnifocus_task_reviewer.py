@@ -30,8 +30,9 @@ def test_load_config_defaults(monkeypatch):
               "MAX_ATTACHMENT_BYTES", "MAX_NOTE_CHARS",
               "X_BEARER_TOKEN", "X_FETCH_MAX_USES"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("REVIEW_MAX_WORKERS", raising=False)
     (model, tag, kanban, fetches, max_att, max_note,
-     x_token, x_max) = _load_config()
+     x_token, x_max, workers) = _load_config()
     assert model == "claude-sonnet-5"
     assert tag == "reviewed"
     assert kanban == "Kanban"
@@ -40,6 +41,7 @@ def test_load_config_defaults(monkeypatch):
     assert max_note == 4000
     assert x_token is None
     assert x_max == 25
+    assert workers == 5
 
 
 def test_load_config_x_token_stripped_or_none(monkeypatch):
@@ -100,6 +102,46 @@ def test_review_tasks_isolates_per_task_failures():
     assert [t["id"] for t, _ in reviewed] == ["t1", "t3"]
     assert [t["id"] for t, _ in failed] == ["t2"]
     assert reviewed[0][1].new_title == "ONE"
+
+
+def test_review_tasks_runs_reviews_concurrently():
+    # A Barrier that only releases once N threads reach it: if review_tasks ran
+    # the reviews serially, the first thread would block until the timeout and
+    # every task would fail. Passing proves the reviews run in parallel.
+    import threading
+
+    n = 4
+    barrier = threading.Barrier(n, timeout=5)
+
+    def review_fn(task, client, x_fetcher=None):
+        barrier.wait()
+        return Enrichment(new_title=task["name"], summary="s")
+
+    tasks = [{"id": f"t{i}", "name": f"n{i}", "note": "", "attachments": []}
+             for i in range(n)]
+    reviewed, failed = review_tasks(tasks, review_fn=review_fn)
+    assert failed == []
+    assert [t["id"] for t, _ in reviewed] == ["t0", "t1", "t2", "t3"]  # order kept
+
+
+def test_review_tasks_preserves_order_under_concurrency():
+    # Reviews finish out of order, but results must follow input order.
+    import threading
+
+    release = {i: threading.Event() for i in range(3)}
+
+    def review_fn(task, client, x_fetcher=None):
+        i = int(task["id"][1:])
+        release[i].wait(timeout=5)              # gated so t2 finishes first
+        return Enrichment(new_title=task["name"], summary="s")
+
+    tasks = [{"id": f"t{i}", "name": f"n{i}", "note": "", "attachments": []}
+             for i in range(3)]
+    # Let them finish in reverse order.
+    for i in (2, 1, 0):
+        release[i].set()
+    reviewed, _ = review_tasks(tasks, review_fn=review_fn)
+    assert [t["id"] for t, _ in reviewed] == ["t0", "t1", "t2"]
 
 
 from omnifocus_task_reviewer import build_write_config
@@ -208,7 +250,8 @@ def test_run_review_dry_run_builds_reviewed():
         apply_fn=lambda rv, rt, kt: ([], []),
     )
     assert result["dry_run"] is True
-    assert result["counts"] == {"reviewed": 1, "applied": 0, "failed": 0, "unresolved": 0}
+    assert result["counts"] == {"reviewed": 1, "applied": 0, "failed": 0,
+                                "unresolved": 0, "remaining": 0}
     assert result["reviewed"][0]["old_name"] == "old"
     assert result["reviewed"][0]["new_title"] == "New"
     assert result["reviewed"][0]["summary"] == "S"
@@ -285,3 +328,57 @@ def test_run_review_reports_unresolved_projects():
     )
     assert result["unresolved"] == ["Ghost"]
     assert result["counts"]["unresolved"] == 1
+
+
+def test_run_review_caps_at_max_tasks_and_reports_remaining():
+    all_tasks = [_tk(f"t{i}", f"n{i}") for i in range(5)]
+    seen = {}
+
+    def review(tasks):
+        seen["count"] = len(tasks)
+        seen["ids"] = [t["id"] for t in tasks]
+        return ([(t, Enrichment(new_title="N", summary="S")) for t in tasks], [])
+
+    result = run_review(
+        ["P"],
+        apply=False,
+        read=lambda projs, rt, kt: (list(all_tasks), []),
+        review=review,
+        apply_fn=lambda rv, rt, kt: ([], []),
+        max_tasks=2,
+    )
+    assert seen["count"] == 2                      # only the first 2 reviewed
+    assert seen["ids"] == ["t0", "t1"]
+    assert result["counts"]["reviewed"] == 2
+    assert result["counts"]["remaining"] == 3      # 5 read - 2 reviewed
+    assert result["remaining"] == 3
+
+
+def test_run_review_no_cap_reviews_all_with_zero_remaining():
+    all_tasks = [_tk(f"t{i}") for i in range(3)]
+    result = run_review(
+        ["P"],
+        apply=False,
+        read=lambda projs, rt, kt: (list(all_tasks), []),
+        review=lambda tasks: (
+            [(t, Enrichment(new_title="N", summary="S")) for t in tasks], []),
+        apply_fn=lambda rv, rt, kt: ([], []),
+    )
+    assert result["counts"]["reviewed"] == 3
+    assert result["counts"]["remaining"] == 0
+    assert result["remaining"] == 0
+
+
+def test_run_review_max_tasks_above_count_reviews_all():
+    all_tasks = [_tk(f"t{i}") for i in range(2)]
+    result = run_review(
+        ["P"],
+        apply=False,
+        read=lambda projs, rt, kt: (list(all_tasks), []),
+        review=lambda tasks: (
+            [(t, Enrichment(new_title="N", summary="S")) for t in tasks], []),
+        apply_fn=lambda rv, rt, kt: ([], []),
+        max_tasks=10,
+    )
+    assert result["counts"]["reviewed"] == 2
+    assert result["remaining"] == 0
