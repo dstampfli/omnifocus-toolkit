@@ -62,3 +62,33 @@ def test_fetcher_skips_none_results():
     f = XPostFetcher("tok", 25, fetch_fn=lambda tid, tok: None)
     assert f.texts_for("x.com/a/status/1") == []
     assert f.used == 1          # a None result still counts as a used lookup
+
+
+def test_fetcher_serializes_concurrent_lookups():
+    # The reviewer now runs task reviews in parallel threads that share one
+    # run-scoped fetcher, so texts_for must be mutually exclusive: two lookups
+    # must never run at once (which would race the check-then-increment on the
+    # use cap). With a lock the observed concurrency stays at 1.
+    import threading
+    import time
+
+    cur = {"n": 0, "max": 0}
+    probe = threading.Lock()
+
+    def fake(tid, tok):
+        with probe:
+            cur["n"] += 1
+            cur["max"] = max(cur["max"], cur["n"])
+        time.sleep(0.05)                 # hold the "in-fetch" window open
+        with probe:
+            cur["n"] -= 1
+        return f"P{tid}"
+
+    f = XPostFetcher("tok", 100, fetch_fn=fake)
+    threads = [threading.Thread(target=lambda i=i: f.texts_for(f"x.com/a/status/{i}"))
+               for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert cur["max"] == 1

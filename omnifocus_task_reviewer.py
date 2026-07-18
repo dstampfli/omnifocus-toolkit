@@ -9,6 +9,7 @@ title and append a summary to the note. Dry-run by default; --apply writes.
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 import anthropic
@@ -37,6 +38,10 @@ def _load_config():
     fetches = _positive_int_env("WEB_FETCH_MAX_USES", "3")
     max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
+    # Each task review is one blocking Claude API call (tens of seconds); the
+    # reviews are independent, so run this many at once to keep a whole project's
+    # wall-clock time bounded rather than tasks x ~60s.
+    workers = _positive_int_env("REVIEW_MAX_WORKERS", "5")
 
     # Optional X (Twitter) API v2 Bearer Token — reused from the triage tool
     # (same env vars). Empty/unset -> None disables X fetching. X_FETCH_MAX_USES
@@ -44,11 +49,12 @@ def _load_config():
     x_token = os.environ.get("X_BEARER_TOKEN", "").strip() or None
     x_max_uses = _positive_int_env("X_FETCH_MAX_USES", "25")
 
-    return model, tag, kanban, fetches, max_att, max_note, x_token, x_max_uses
+    return (model, tag, kanban, fetches, max_att, max_note, x_token, x_max_uses,
+            workers)
 
 
 (MODEL, REVIEW_TAG, KANBAN_TAG, WEB_FETCH_MAX_USES, MAX_ATTACHMENT_BYTES,
- MAX_NOTE_CHARS, X_BEARER_TOKEN, X_FETCH_MAX_USES) = _load_config()
+ MAX_NOTE_CHARS, X_BEARER_TOKEN, X_FETCH_MAX_USES, REVIEW_MAX_WORKERS) = _load_config()
 # --------------------------------------------------------------------------
 
 
@@ -199,20 +205,29 @@ def review_task(task, client, x_fetcher=None):
     raise ValueError("model returned no structured Enrichment output")
 
 
-def review_tasks(tasks, review_fn=review_task):
+def review_tasks(tasks, review_fn=review_task, max_workers=None):
+    """Review each task with its own Claude API call, running up to max_workers
+    reviews concurrently. Per-task failures are isolated (one bad task never
+    aborts the run) and both result lists follow input order regardless of the
+    order the reviews actually finish in."""
     if not tasks:
         return [], []
     client = anthropic.Anthropic()
     x_fetcher = XPostFetcher(X_BEARER_TOKEN, X_FETCH_MAX_USES) if X_BEARER_TOKEN else None
+    workers = max(1, min(max_workers or REVIEW_MAX_WORKERS, len(tasks)))
     reviewed, failed = [], []
-    for task in tasks:
-        try:
-            enrichment = review_fn(task, client, x_fetcher=x_fetcher)
-            reviewed.append((task, enrichment))
-        except Exception as e:  # per-task isolation: never abort the whole run
-            print(f"Review failed for {task.get('name', task.get('id'))!r}: {e}",
-                  file=sys.stderr)
-            failed.append((task, str(e)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Submit in order, then collect in submission order so results are
+        # deterministic even though reviews complete out of order.
+        futures = [pool.submit(review_fn, task, client, x_fetcher=x_fetcher)
+                   for task in tasks]
+        for task, future in zip(tasks, futures):
+            try:
+                reviewed.append((task, future.result()))
+            except Exception as e:  # per-task isolation: never abort the whole run
+                print(f"Review failed for {task.get('name', task.get('id'))!r}: {e}",
+                      file=sys.stderr)
+                failed.append((task, str(e)))
     return reviewed, failed
 
 
@@ -345,12 +360,23 @@ def format_report(reviewed, failed, unresolved, applied_names, dry_run):
     return "\n".join(lines)
 
 
-def _review_pipeline(projects, apply, read, review, apply_fn, review_tag, kanban_tag):
+def _review_pipeline(projects, apply, read, review, apply_fn, review_tag,
+                     kanban_tag, max_tasks=None):
     """Shared read -> review -> (optional) apply.
 
-    Returns (reviewed, failed, unresolved, applied_names). On write failure the
-    affected task moves from `reviewed` to `failed`, matching the CLI today."""
+    When max_tasks is set, at most that many of the read tasks are reviewed this
+    call and `remaining` reports how many unreviewed tasks were left untouched,
+    so a caller can drain a large project over several bounded calls instead of
+    one open-ended one.
+
+    Returns (reviewed, failed, unresolved, applied_names, remaining). On write
+    failure the affected task moves from `reviewed` to `failed`, matching the
+    CLI today."""
     tasks, unresolved = read(projects, review_tag, kanban_tag)
+    remaining = 0
+    if max_tasks is not None and len(tasks) > max_tasks:
+        remaining = len(tasks) - max_tasks
+        tasks = tasks[:max_tasks]
     reviewed, failed = review(tasks)
     applied_names = []
     if apply and reviewed:
@@ -361,16 +387,22 @@ def _review_pipeline(projects, apply, read, review, apply_fn, review_tag, kanban
                 if task["id"] in failed_set:
                     failed.append((task, "write failed"))
             reviewed = [(t, e) for t, e in reviewed if t["id"] not in failed_set]
-    return reviewed, failed, unresolved, applied_names
+    return reviewed, failed, unresolved, applied_names, remaining
 
 
 def run_review(projects, apply=False, *, read=read_project_tasks,
                review=review_tasks, apply_fn=apply_enrichments,
-               review_tag=REVIEW_TAG, kanban_tag=KANBAN_TAG):
+               review_tag=REVIEW_TAG, kanban_tag=KANBAN_TAG, max_tasks=None):
     """Review not-yet-reviewed tasks in the named project(s) and return a
-    structured, JSON-serializable result. Dry-run by default."""
-    reviewed, failed, unresolved, applied_names = _review_pipeline(
-        projects, apply, read, review, apply_fn, review_tag, kanban_tag)
+    structured, JSON-serializable result. Dry-run by default.
+
+    max_tasks bounds how many tasks are reviewed this call; the returned
+    `remaining` count is how many unreviewed tasks were left for a follow-up
+    call, so a scheduled agent can loop until it reaches 0 instead of making one
+    unbounded call that may exceed its client timeout."""
+    reviewed, failed, unresolved, applied_names, remaining = _review_pipeline(
+        projects, apply, read, review, apply_fn, review_tag, kanban_tag,
+        max_tasks=max_tasks)
     return {
         "dry_run": not apply,
         "reviewed": [{"id": t["id"], "old_name": t["name"],
@@ -380,8 +412,10 @@ def run_review(projects, apply=False, *, read=read_project_tasks,
         "failed": [{"id": t["id"], "name": t["name"], "error": err}
                    for t, err in failed],
         "unresolved": unresolved,
+        "remaining": remaining,
         "counts": {"reviewed": len(reviewed), "applied": len(applied_names),
-                   "failed": len(failed), "unresolved": len(unresolved)},
+                   "failed": len(failed), "unresolved": len(unresolved),
+                   "remaining": remaining},
     }
 
 
@@ -392,7 +426,7 @@ def main(argv):
               file=sys.stderr)
         return 2
 
-    reviewed, failed, unresolved, applied_names = _review_pipeline(
+    reviewed, failed, unresolved, applied_names, _remaining = _review_pipeline(
         projects, apply, read_project_tasks, review_tasks, apply_enrichments,
         REVIEW_TAG, KANBAN_TAG)
 

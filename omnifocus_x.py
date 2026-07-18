@@ -8,6 +8,7 @@ source. All network/parse errors degrade to None; nothing here raises.
 
 import json
 import re
+import threading
 import urllib.request
 from typing import List, Optional
 
@@ -81,18 +82,22 @@ class XPostFetcher:
         self.fetch_fn = fetch_fn
         self.cache = {}
         self.used = 0
+        # The reviewer shares one fetcher across parallel task-review threads, so
+        # the check-then-increment on `used` and the cache writes must be atomic.
+        self._lock = threading.Lock()
 
     def texts_for(self, text: Optional[str]) -> List[str]:
         """Fetched post texts for the tweet IDs in `text`. [] when no token."""
         if not self.token:
             return []
         out: List[str] = []
-        for tid in extract_tweet_ids(text):
-            if tid not in self.cache:
-                if self.used >= self.max_uses:
-                    continue
-                self.cache[tid] = self.fetch_fn(tid, self.token)
-                self.used += 1
-            if self.cache[tid]:
-                out.append(self.cache[tid])
+        with self._lock:
+            for tid in extract_tweet_ids(text):
+                if tid not in self.cache:
+                    if self.used >= self.max_uses:
+                        continue
+                    self.cache[tid] = self.fetch_fn(tid, self.token)
+                    self.used += 1
+                if self.cache[tid]:
+                    out.append(self.cache[tid])
         return out
