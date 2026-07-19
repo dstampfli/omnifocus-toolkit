@@ -40,6 +40,44 @@ def test_review_tasks_wraps_errors(monkeypatch):
     assert "error" in out and "bad" in out["error"]
 
 
+def test_sort_project_passes_through(monkeypatch):
+    monkeypatch.setattr(
+        server.sorter, "run_sort",
+        lambda projects, by, descending=False, apply=False: {
+            "projects": projects, "by": by, "descending": descending,
+            "apply": apply})
+    assert server.sort_project(["Training"], "due", descending=True,
+                               apply=True) == {
+        "projects": ["Training"], "by": "due", "descending": True,
+        "apply": True}
+
+
+def test_sort_project_defaults_to_ascending_dry_run(monkeypatch):
+    seen = {}
+
+    def fake(projects, by, descending=False, apply=False):
+        seen.update(descending=descending, apply=apply)
+        return {}
+    monkeypatch.setattr(server.sorter, "run_sort", fake)
+    server.sort_project(["Training"], "title")
+    assert seen == {"descending": False, "apply": False}
+
+
+def test_sort_project_wraps_errors(monkeypatch):
+    def boom(projects, by, descending=False, apply=False):
+        raise RuntimeError("bad key")
+    monkeypatch.setattr(server.sorter, "run_sort", boom)
+    out = server.sort_project(["Training"], "nonsense")
+    assert "error" in out and "bad key" in out["error"]
+
+
+def test_sort_project_docstring_lists_every_valid_key():
+    """The scheduled agent picks `by` from the docstring, so it must be complete."""
+    doc = server.sort_project.__doc__
+    for key in server.sorter.SORT_KEYS:
+        assert key in doc, key
+
+
 def test_omnifocus_status_counts(monkeypatch):
     monkeypatch.setattr(server.triage, "read_omnifocus",
                         lambda: ([1, 2, 3], [1, 2]))

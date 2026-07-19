@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 import omnifocus_inbox_triage as triage  # noqa: E402
+import omnifocus_sorter as sorter  # noqa: E402
 import omnifocus_task_reviewer as reviewer  # noqa: E402
 
 mcp = FastMCP("OmniFocus Toolkit")
@@ -49,6 +50,36 @@ def review_tasks(projects: list[str], apply: bool = False) -> dict:
         return reviewer.run_review(projects, apply=apply)
     except Exception as e:
         return {"error": f"review_tasks failed: {e}"}
+
+
+@mcp.tool()
+def sort_project(projects: list[str], by: str, descending: bool = False,
+                 apply: bool = False) -> dict:
+    """Reorder the tasks inside the named OmniFocus project(s).
+
+    `by` is one of the eight keys OmniFocus sorts by natively:
+      title     - task name, case-insensitive
+      status    - urgency first: Overdue, DueSoon, Next, Available, Blocked,
+                  Completed, Dropped
+      added     - date the task was added
+      completed - completion date
+      due       - due date
+      planned   - planned date
+      defer     - defer date
+      dropped   - date the task was dropped
+
+    Tasks with no value for the chosen key (e.g. no due date) always sort last,
+    in both directions. Set descending=True to reverse. Only the project's
+    top-level tasks move; subtasks inside action groups keep their order.
+
+    With apply=True, write the new order. The default apply=False previews it
+    and changes nothing. Unlike review_tasks this makes no Claude API calls, so
+    it is fast regardless of project size and needs no batching loop.
+    """
+    try:
+        return sorter.run_sort(projects, by, descending=descending, apply=apply)
+    except Exception as e:
+        return {"error": f"sort_project failed: {e}"}
 
 
 @mcp.tool()
