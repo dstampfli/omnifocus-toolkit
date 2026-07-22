@@ -138,7 +138,8 @@ function run(argv) {
         "      dueDate: ms(t.dueDate)," +
         "      plannedDate: ms(t.plannedDate)," +
         "      deferDate: ms(t.deferDate)," +
-        "      dropDate: ms(t.dropDate)" +
+        "      dropDate: ms(t.dropDate)," +
+        "      tags: (t.tags || []).map(tg => tg.name)" +
         "    }));" +
         "    projectsOut.push({ id: proj.id.primaryKey, name: proj.name, tasks: tasksOut });" +
         "  });" +
@@ -225,18 +226,18 @@ def apply_order(cfg):
 
 # --------------------------- pipeline & reporting ---------------------------
 
-def _sort_pipeline(projects, by, descending, apply, read, apply_fn):
+def _sort_pipeline(projects, by, descending, apply, tag_order, read, apply_fn):
     """Shared read -> sort -> (optional) apply.
 
     Returns (sorted_projects, applied, write_failed, missing), where
     sorted_projects carries each project's tasks in their new order."""
-    _validate_sort(by)  # fail before touching OmniFocus
+    _validate_sort(by, tag_order)  # fail before touching OmniFocus
     read_projects, missing = read(projects)
     valid_ids = {t["id"] for p in read_projects for t in p["tasks"]}
 
     sorted_projects = []
     for p in read_projects:
-        ordered = sort_tasks(p["tasks"], by, descending)
+        ordered = sort_tasks(p["tasks"], by, descending, tag_order)
         sorted_projects.append({
             "id": p["id"],
             "name": p["name"],
@@ -252,12 +253,13 @@ def _sort_pipeline(projects, by, descending, apply, read, apply_fn):
     return sorted_projects, applied, write_failed, missing
 
 
-def run_sort(projects, by, *, descending=False, apply=False,
+def run_sort(projects, by, *, descending=False, apply=False, tag_order=None,
              read=read_project_tasks, apply_fn=apply_order):
     """Sort the tasks in the named project(s) and return a structured,
-    JSON-serializable result. Dry-run by default."""
+    JSON-serializable result. Dry-run by default. For by='tag', tag_order is
+    the priority-ordered list of tag names."""
     sorted_projects, applied, write_failed, missing = _sort_pipeline(
-        projects, by, descending, apply, read, apply_fn)
+        projects, by, descending, apply, tag_order, read, apply_fn)
     return {
         "dry_run": not apply,
         "by": by,

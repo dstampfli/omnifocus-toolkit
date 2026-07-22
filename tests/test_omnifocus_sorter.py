@@ -346,6 +346,39 @@ def test_run_sort_result_is_json_serializable():
     json.dumps(out)  # must not raise
 
 
+def test_run_sort_orders_by_tag():
+    read = _fake_read([{"id": "p1", "name": "Training",
+                        "tasks": [task("t1", "someday", tags=["Someday"]),
+                                  task("t2", "next", tags=["Next"])]}])
+    out = run_sort(["Training"], "tag", tag_order=["Next", "Someday"],
+                   read=read, apply_fn=lambda cfg: ([], []))
+    assert out["projects"][0]["order"] == ["next", "someday"]
+    assert out["by"] == "tag"
+
+
+def test_run_sort_applies_the_tag_order_when_asked():
+    seen = {}
+    read = _fake_read([{"id": "p1", "name": "Training",
+                        "tasks": [task("t1", "someday", tags=["Someday"]),
+                                  task("t2", "next", tags=["Next"])]}])
+
+    def apply_fn(cfg):
+        seen["cfg"] = cfg
+        return ["p1"], []
+
+    run_sort(["Training"], "tag", tag_order=["Next", "Someday"],
+             apply=True, read=read, apply_fn=apply_fn)
+    assert seen["cfg"]["projects"] == [{"id": "p1", "taskIds": ["t2", "t1"]}]
+
+
+def test_run_sort_rejects_tag_without_tag_order_before_reading():
+    def read(_names):
+        raise AssertionError("must validate before touching OmniFocus")
+
+    with pytest.raises(SystemExit):
+        run_sort(["Training"], "tag", read=read, apply_fn=lambda cfg: ([], []))
+
+
 # --------------------------------- reporting -------------------------------
 
 def test_format_report_shows_the_new_order():
