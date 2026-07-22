@@ -11,7 +11,7 @@ osascript round-trips regardless of project size.
 import json
 import subprocess
 import sys
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 from omnifocus_common import run_jxa
 
