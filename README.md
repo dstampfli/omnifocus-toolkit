@@ -7,7 +7,8 @@ AI-assisted automation for **OmniFocus**, powered by the Claude API:
 - **Task reviewer** — enrich not-yet-reviewed tasks in named projects with a
   clearer title and a summary of any linked page, X post, or attachment.
 - **Project sorter** — reorder a project's tasks by any of the eight keys
-  OmniFocus sorts by natively (no API call, no tokens).
+  OmniFocus sorts by natively, or by a custom tag priority order (no API call,
+  no tokens).
 - **MCP server** — expose all three tools to Claude Desktop / Cowork so a
   scheduled agent can run them for you.
 
@@ -109,14 +110,16 @@ default).
 ## Project sorter (`omnifocus_sorter.py`)
 
 Reorders the tasks inside the named OmniFocus project(s) by any of the eight keys
-OmniFocus offers in its **Organize ▸ Sort** menu. Unlike the other two tools this
-makes **no Claude API call** — it needs no API key and costs no tokens.
+OmniFocus offers in its **Organize ▸ Sort** menu, or by a caller-supplied tag
+priority order. Unlike the other two tools this makes **no Claude API call** —
+it needs no API key and costs no tokens.
 
 ```bash
 uv run python omnifocus_sorter.py "Training" --by due            # dry-run: show the new order
 uv run python omnifocus_sorter.py "Training" "Tech" --by title   # multiple projects
 uv run python omnifocus_sorter.py "Training" --by due --apply    # write the new order
 uv run python omnifocus_sorter.py "Training" --by added --desc --apply   # newest first
+uv run python omnifocus_sorter.py "Training" --by tag --tag Next --tag Waiting --tag Someday --apply   # by tag priority
 ```
 
 Sort keys for `--by`:
@@ -131,6 +134,7 @@ Sort keys for `--by`:
 | `planned` | Planned date |
 | `defer` | Defer date |
 | `dropped` | Date dropped |
+| `tag` | Tag priority — pass the order with repeated `--tag` (see below); earliest-listed tag wins |
 
 Behavior worth knowing:
 
@@ -141,6 +145,10 @@ Behavior worth knowing:
 - **Only top-level tasks move.** Subtasks inside action groups keep their order.
 - Completed and dropped tasks are included in the sort, matching what
   OmniFocus's own Sort menu does.
+- **Sorting by tag** (`--by tag`) needs a priority order: repeat `--tag NAME`
+  for each tag, most important first. A task sorts by its highest-priority tag;
+  matching is case-insensitive and by leaf name (so `--tag Reviewed` matches a
+  nested `Kanban ▸ Reviewed`). Tasks with none of the listed tags sort last.
 
 ## MCP server (Claude Desktop / Cowork)
 
@@ -156,8 +164,9 @@ Tools:
   move high-confidence matches into their project.
 - `review_tasks(projects, apply=false)` — enrich not-yet-reviewed tasks in the
   named project(s); with `apply=true`, write changes and tag them reviewed.
-- `sort_project(projects, by, descending=false, apply=false)` — reorder the
-  tasks in the named project(s) by one of the eight sort keys above; with
+- `sort_project(projects, by, descending=false, apply=false, tag_order=null)` —
+  reorder the tasks in the named project(s) by one of the eight sort keys above
+  or by `tag` (pass `tag_order`, a priority-ordered list of tag names); with
   `apply=true`, write the new order. Makes no API call, so it is fast regardless
   of project size.
 - `list_projects()` — read-only list of your active projects (id, name, folder
