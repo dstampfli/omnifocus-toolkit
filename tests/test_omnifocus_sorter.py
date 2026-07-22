@@ -20,7 +20,7 @@ def task(tid, name="T", status="Available", **dates):
     """A read-stage task dict; every date field defaults to None."""
     base = {"id": tid, "name": name, "status": status, "added": None,
             "completionDate": None, "dueDate": None, "plannedDate": None,
-            "deferDate": None, "dropDate": None}
+            "deferDate": None, "dropDate": None, "tags": []}
     base.update(dates)
     return base
 
@@ -99,6 +99,60 @@ def test_tasks_without_the_date_sort_last_descending_too():
 def test_nulls_keep_their_relative_order():
     tasks = [task("1", "b"), task("2", "a"), task("3", "dated", dueDate=1)]
     assert names(sort_tasks(tasks, "due")) == ["dated", "b", "a"]
+
+
+# --------------------------------- tag sort --------------------------------
+
+def test_sort_by_tag_orders_by_tag_order_position():
+    order = ["Next", "Waiting", "Someday"]
+    tasks = [task("1", "s", tags=["Someday"]),
+             task("2", "n", tags=["Next"]),
+             task("3", "w", tags=["Waiting"])]
+    assert names(sort_tasks(tasks, "tag", tag_order=order)) == ["n", "w", "s"]
+
+
+def test_sort_by_tag_uses_minimum_index_for_multi_tag_task():
+    """A task with several listed tags sorts by its earliest-listed one."""
+    order = ["Next", "Waiting", "Someday"]
+    tasks = [task("1", "someday", tags=["Someday"]),
+             task("2", "both", tags=["Someday", "Next"])]
+    assert names(sort_tasks(tasks, "tag", tag_order=order)) == ["both", "someday"]
+
+
+def test_sort_by_tag_is_case_insensitive():
+    tasks = [task("1", "b", tags=["someday"]), task("2", "a", tags=["NEXT"])]
+    assert names(sort_tasks(tasks, "tag", tag_order=["Next", "Someday"])) == [
+        "a", "b"]
+
+
+def test_tasks_without_a_listed_tag_sort_last():
+    order = ["Next"]
+    tasks = [task("1", "untagged", tags=["Home"]),
+             task("2", "no tags", tags=[]),
+             task("3", "next", tags=["Next"])]
+    assert names(sort_tasks(tasks, "tag", tag_order=order)) == [
+        "next", "untagged", "no tags"]
+
+
+def test_unmatched_tag_tasks_stay_last_when_descending():
+    order = ["Next", "Waiting"]
+    tasks = [task("1", "none", tags=[]),
+             task("2", "next", tags=["Next"]),
+             task("3", "waiting", tags=["Waiting"])]
+    assert names(sort_tasks(tasks, "tag", tag_order=order, descending=True)) == [
+        "waiting", "next", "none"]
+
+
+def test_tag_ties_preserve_input_order():
+    order = ["Next"]
+    tasks = [task("1", "first", tags=["Next"]), task("2", "second", tags=["Next"])]
+    assert names(sort_tasks(tasks, "tag", tag_order=order)) == ["first", "second"]
+
+
+def test_sort_by_tag_without_tag_order_exits():
+    with pytest.raises(SystemExit) as excinfo:
+        sort_tasks([task("1", tags=["Next"])], "tag", tag_order=[])
+    assert "tag" in str(excinfo.value)
 
 
 # --------------------------- stability & direction -------------------------

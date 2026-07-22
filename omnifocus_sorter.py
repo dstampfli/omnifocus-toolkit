@@ -47,35 +47,53 @@ STATUS_RANK = {
 _UNKNOWN_STATUS_RANK = len(STATUS_RANK)
 
 
-def _validate_key(key):
+def _validate_sort(key, tag_order=None):
+    if key == "tag":
+        if not tag_order:
+            raise SystemExit(
+                'sort key "tag" requires a non-empty tag_order '
+                "(a priority-ordered list of tag names)")
+        return
     if key not in SORT_KEYS:
         raise SystemExit(
-            f"unknown sort key {key!r}; valid keys: {', '.join(sorted(SORT_KEYS))}"
-        )
+            f"unknown sort key {key!r}; valid keys: "
+            f"{', '.join(sorted(SORT_KEYS))}, tag")
 
 
-def sort_value(task, key):
+def sort_value(task, key, tag_index=None):
     """The comparable value for `task` under `key`, or None when unset.
 
-    None means 'no value' and always sorts last (see sort_tasks)."""
-    field = SORT_KEYS[key]
+    None means 'no value' and always sorts last (see sort_tasks). For key
+    'tag', `tag_index` maps casefolded tag names to their tag_order position;
+    the value is the minimum position among the task's tags, or None if none
+    of the task's tags appear in tag_order."""
+    if key == "tag":
+        index = tag_index or {}
+        positions = [index[n.casefold()] for n in (task.get("tags") or [])
+                     if n.casefold() in index]
+        return min(positions) if positions else None
     if key == "title":
         return (task.get("name") or "").casefold()
     if key == "status":
         return STATUS_RANK.get(task.get("status"), _UNKNOWN_STATUS_RANK)
-    return task.get(field)
+    return task.get(SORT_KEYS[key])
 
 
-def sort_tasks(tasks, key, descending=False):
+def sort_tasks(tasks, key, descending=False, tag_order=None):
     """Return `tasks` in sorted order. Never mutates the input.
 
     Tasks with no value for `key` sort last in BOTH directions — flipping them
     to the top on a descending sort is never what the user wants. The sort is
-    stable, so ties keep their input order and re-sorting is idempotent."""
-    _validate_key(key)
-    valued = [t for t in tasks if sort_value(t, key) is not None]
-    unvalued = [t for t in tasks if sort_value(t, key) is None]
-    ordered = sorted(valued, key=lambda t: sort_value(t, key), reverse=descending)
+    stable, so ties keep their input order and re-sorting is idempotent. For
+    key 'tag', `tag_order` is the priority-ordered list of tag names."""
+    _validate_sort(key, tag_order)
+    tag_index = None
+    if key == "tag":
+        tag_index = {name.casefold(): i for i, name in enumerate(tag_order)}
+    valued = [t for t in tasks if sort_value(t, key, tag_index) is not None]
+    unvalued = [t for t in tasks if sort_value(t, key, tag_index) is None]
+    ordered = sorted(valued, key=lambda t: sort_value(t, key, tag_index),
+                     reverse=descending)
     return ordered + unvalued
 
 
@@ -212,7 +230,7 @@ def _sort_pipeline(projects, by, descending, apply, read, apply_fn):
 
     Returns (sorted_projects, applied, write_failed, missing), where
     sorted_projects carries each project's tasks in their new order."""
-    _validate_key(by)  # fail before touching OmniFocus
+    _validate_sort(by)  # fail before touching OmniFocus
     read_projects, missing = read(projects)
     valid_ids = {t["id"] for p in read_projects for t in p["tasks"]}
 
