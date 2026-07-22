@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 import omnifocus_inbox_triage as triage  # noqa: E402
+import omnifocus_sorter as sorter  # noqa: E402
 import omnifocus_task_reviewer as reviewer  # noqa: E402
 
 mcp = FastMCP("OmniFocus Toolkit")
@@ -62,6 +63,48 @@ def review_tasks(projects: list[str], apply: bool = False,
         return reviewer.run_review(projects, apply=apply, max_tasks=max_tasks)
     except Exception as e:
         return {"error": f"review_tasks failed: {e}"}
+
+
+@mcp.tool()
+def sort_project(projects: list[str], by: str, descending: bool = False,
+                 apply: bool = False,
+                 tag_order: list[str] | None = None) -> dict:
+    """Reorder the tasks inside the named OmniFocus project(s).
+
+    `by` is one of the eight keys OmniFocus sorts by natively, or "tag":
+      title     - task name, case-insensitive
+      status    - urgency first: Overdue, DueSoon, Next, Available, Blocked,
+                  Completed, Dropped
+      added     - date the task was added
+      completed - completion date
+      due       - due date
+      planned   - planned date
+      defer     - defer date
+      dropped   - date the task was dropped
+      tag       - by tag priority; requires tag_order (see below)
+
+    For by="tag", pass tag_order: a priority-ordered list of tag names. Each
+    task sorts by the position of its highest-priority (earliest-listed) tag;
+    matching is case-insensitive and by leaf tag name (so "Reviewed" matches a
+    nested "Kanban : Reviewed" tag). tag_order is ignored for the other keys.
+
+    Tasks with no value for the chosen key (e.g. no due date, or no listed tag)
+    always sort last, in both directions. Set descending=True to reverse. Only
+    the project's top-level tasks move; subtasks inside action groups keep their
+    order.
+
+    With apply=True, write the new order. The default apply=False previews it
+    and changes nothing. Unlike review_tasks this makes no Claude API calls, so
+    it is fast regardless of project size and needs no batching loop.
+    """
+    try:
+        return sorter.run_sort(projects, by, descending=descending,
+                               apply=apply, tag_order=tag_order)
+    except (Exception, SystemExit) as e:
+        # run_sort's _validate_sort raises SystemExit (BaseException, not
+        # Exception) on an invalid `by`/missing tag_order; catch it too so a
+        # scheduled agent gets a clean {"error": ...} instead of a crash.
+        return {"error": f"sort_project failed: {e}"}
 
 
 @mcp.tool()

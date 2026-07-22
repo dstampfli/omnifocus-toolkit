@@ -54,6 +54,67 @@ def test_review_tasks_wraps_errors(monkeypatch):
     assert "error" in out and "bad" in out["error"]
 
 
+def test_sort_project_passes_through(monkeypatch):
+    monkeypatch.setattr(
+        server.sorter, "run_sort",
+        lambda projects, by, descending=False, apply=False, tag_order=None: {
+            "projects": projects, "by": by, "descending": descending,
+            "apply": apply})
+    assert server.sort_project(["Training"], "due", descending=True,
+                               apply=True) == {
+        "projects": ["Training"], "by": "due", "descending": True,
+        "apply": True}
+
+
+def test_sort_project_defaults_to_ascending_dry_run(monkeypatch):
+    seen = {}
+
+    def fake(projects, by, descending=False, apply=False, tag_order=None):
+        seen.update(descending=descending, apply=apply)
+        return {}
+    monkeypatch.setattr(server.sorter, "run_sort", fake)
+    server.sort_project(["Training"], "title")
+    assert seen == {"descending": False, "apply": False}
+
+
+def test_sort_project_wraps_errors(monkeypatch):
+    def boom(projects, by, descending=False, apply=False, tag_order=None):
+        raise RuntimeError("bad key")
+    monkeypatch.setattr(server.sorter, "run_sort", boom)
+    out = server.sort_project(["Training"], "nonsense")
+    assert "error" in out and "bad key" in out["error"]
+
+
+def test_sort_project_wraps_validation_systemexit():
+    """by='tag' with no tag_order raises SystemExit in _validate_sort (before any
+    OmniFocus read); the tool must still return a clean {"error": ...} dict."""
+    out = server.sort_project(["Training"], "tag")
+    assert "error" in out and "tag_order" in out["error"]
+
+
+def test_sort_project_docstring_lists_every_valid_key():
+    """The scheduled agent picks `by` from the docstring, so it must be complete."""
+    doc = server.sort_project.__doc__
+    for key in server.sorter.SORT_KEYS:
+        assert key in doc, key
+
+
+def test_sort_project_forwards_tag_order(monkeypatch):
+    seen = {}
+
+    def fake(projects, by, descending=False, apply=False, tag_order=None):
+        seen["tag_order"] = tag_order
+        return {}
+    monkeypatch.setattr(server.sorter, "run_sort", fake)
+    server.sort_project(["Training"], "tag", tag_order=["Next", "Waiting"])
+    assert seen["tag_order"] == ["Next", "Waiting"]
+
+
+def test_sort_project_docstring_documents_tag():
+    """`tag` is not in SORT_KEYS, so assert the docstring mentions it explicitly."""
+    assert "tag" in server.sort_project.__doc__
+
+
 def test_omnifocus_status_counts(monkeypatch):
     monkeypatch.setattr(server.triage, "read_omnifocus",
                         lambda: ([1, 2, 3], [1, 2]))
