@@ -24,6 +24,12 @@ import omnifocus_task_reviewer as reviewer  # noqa: E402
 
 mcp = FastMCP("OmniFocus Toolkit")
 
+# Each task review is a blocking Claude API call of tens of seconds, so a single
+# review_tasks call over a large project can outlast the client's tool timeout.
+# Bounding each call to this many tasks (and reporting `remaining`) keeps every
+# call short; the agent loops until remaining is 0.
+DEFAULT_MAX_TASKS = 5
+
 
 @mcp.tool()
 def triage_inbox(apply: bool = False) -> dict:
@@ -39,15 +45,22 @@ def triage_inbox(apply: bool = False) -> dict:
 
 
 @mcp.tool()
-def review_tasks(projects: list[str], apply: bool = False) -> dict:
+def review_tasks(projects: list[str], apply: bool = False,
+                 max_tasks: int = DEFAULT_MAX_TASKS) -> dict:
     """Review not-yet-reviewed tasks in the named OmniFocus project(s),
     enriching each task's title and note.
 
     With apply=True, write the changes and tag each task reviewed. The default
     apply=False previews the proposed enrichments and changes nothing.
+
+    Each task review is a slow API call, so this reviews at most `max_tasks`
+    tasks per call and returns `remaining` = how many unreviewed tasks are left.
+    When `remaining` > 0, call this tool again with the same arguments to
+    process the next batch; repeat until `remaining` is 0. This keeps each call
+    short enough to finish within the scheduled task's tool timeout.
     """
     try:
-        return reviewer.run_review(projects, apply=apply)
+        return reviewer.run_review(projects, apply=apply, max_tasks=max_tasks)
     except Exception as e:
         return {"error": f"review_tasks failed: {e}"}
 
