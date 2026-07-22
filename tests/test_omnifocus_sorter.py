@@ -229,25 +229,36 @@ def test_build_write_config_drops_ids_not_seen_by_the_read_stage():
 # ----------------------------------- CLI -----------------------------------
 
 def test_parse_args_projects_key_and_flags():
-    projects, by, descending, apply = parse_args(
+    projects, by, descending, apply, tag_order = parse_args(
         ["Training", "Tech", "--by", "due", "--desc", "--apply"])
     assert projects == ["Training", "Tech"]
     assert by == "due"
     assert descending is True
     assert apply is True
+    assert tag_order == []
 
 
 def test_parse_args_defaults_to_ascending_dry_run():
-    projects, by, descending, apply = parse_args(["Training", "--by", "title"])
+    projects, by, descending, apply, tag_order = parse_args(
+        ["Training", "--by", "title"])
     assert projects == ["Training"]
     assert by == "title"
     assert descending is False
     assert apply is False
+    assert tag_order == []
 
 
 def test_parse_args_missing_key_returns_none():
-    _projects, by, _descending, _apply = parse_args(["Training"])
+    _projects, by, _descending, _apply, _tag_order = parse_args(["Training"])
     assert by is None
+
+
+def test_parse_args_collects_repeated_tag_flags_in_order():
+    projects, by, _descending, _apply, tag_order = parse_args(
+        ["Training", "--by", "tag", "--tag", "Next", "--tag", "Waiting"])
+    assert projects == ["Training"]
+    assert by == "tag"
+    assert tag_order == ["Next", "Waiting"]
 
 
 # ---------------------------------- run_sort -------------------------------

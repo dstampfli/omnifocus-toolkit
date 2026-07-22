@@ -307,10 +307,11 @@ def format_report(result):
 
 # ----------------------------------- CLI -----------------------------------
 
-def parse_args(argv) -> Tuple[List[str], Optional[str], bool, bool]:
+def parse_args(argv):
     apply = "--apply" in argv
     descending = "--desc" in argv
     by = None
+    tag_order = []
     rest = []
     i = 0
     while i < len(argv):
@@ -319,23 +320,31 @@ def parse_args(argv) -> Tuple[List[str], Optional[str], bool, bool]:
             i += 1
             if i < len(argv):
                 by = argv[i]
+        elif arg == "--tag":
+            i += 1
+            if i < len(argv):
+                tag_order.append(argv[i])
         elif arg not in ("--apply", "--desc"):
             rest.append(arg)
         i += 1
-    return rest, by, descending, apply
+    return rest, by, descending, apply, tag_order
 
 
 USAGE = ("usage: omnifocus_sorter.py PROJECT [PROJECT ...] --by KEY "
-         "[--desc] [--apply]\n       KEY: " + ", ".join(sorted(SORT_KEYS)))
+         "[--desc] [--apply]\n"
+         "       KEY: " + ", ".join(sorted(SORT_KEYS)) + ", tag\n"
+         "       for --by tag, pass the priority order with repeated --tag:\n"
+         "         --by tag --tag Next --tag Waiting --tag Someday")
 
 
 def main(argv):
-    projects, by, descending, apply = parse_args(argv)
+    projects, by, descending, apply, tag_order = parse_args(argv)
     if not projects or not by:
         print(USAGE, file=sys.stderr)
         return 2
 
-    result = run_sort(projects, by, descending=descending, apply=apply)
+    result = run_sort(projects, by, descending=descending, apply=apply,
+                      tag_order=tag_order)
     print(format_report(result))
     return 1 if (result["missing"] or result["failed"]) else 0
 
