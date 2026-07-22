@@ -152,7 +152,7 @@ def test_tag_ties_preserve_input_order():
 def test_sort_by_tag_without_tag_order_exits():
     with pytest.raises(SystemExit) as excinfo:
         sort_tasks([task("1", tags=["Next"])], "tag", tag_order=[])
-    assert "tag" in str(excinfo.value)
+    assert "tag_order" in str(excinfo.value)
 
 
 # --------------------------- stability & direction -------------------------

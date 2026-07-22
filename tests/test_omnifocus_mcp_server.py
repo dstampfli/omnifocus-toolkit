@@ -71,6 +71,13 @@ def test_sort_project_wraps_errors(monkeypatch):
     assert "error" in out and "bad key" in out["error"]
 
 
+def test_sort_project_wraps_validation_systemexit():
+    """by='tag' with no tag_order raises SystemExit in _validate_sort (before any
+    OmniFocus read); the tool must still return a clean {"error": ...} dict."""
+    out = server.sort_project(["Training"], "tag")
+    assert "error" in out and "tag_order" in out["error"]
+
+
 def test_sort_project_docstring_lists_every_valid_key():
     """The scheduled agent picks `by` from the docstring, so it must be complete."""
     doc = server.sort_project.__doc__

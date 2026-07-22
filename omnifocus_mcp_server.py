@@ -87,7 +87,10 @@ def sort_project(projects: list[str], by: str, descending: bool = False,
     try:
         return sorter.run_sort(projects, by, descending=descending,
                                apply=apply, tag_order=tag_order)
-    except Exception as e:
+    except (Exception, SystemExit) as e:
+        # run_sort's _validate_sort raises SystemExit (BaseException, not
+        # Exception) on an invalid `by`/missing tag_order; catch it too so a
+        # scheduled agent gets a clean {"error": ...} instead of a crash.
         return {"error": f"sort_project failed: {e}"}
 
 
