@@ -43,7 +43,7 @@ def test_review_tasks_wraps_errors(monkeypatch):
 def test_sort_project_passes_through(monkeypatch):
     monkeypatch.setattr(
         server.sorter, "run_sort",
-        lambda projects, by, descending=False, apply=False: {
+        lambda projects, by, descending=False, apply=False, tag_order=None: {
             "projects": projects, "by": by, "descending": descending,
             "apply": apply})
     assert server.sort_project(["Training"], "due", descending=True,
@@ -55,7 +55,7 @@ def test_sort_project_passes_through(monkeypatch):
 def test_sort_project_defaults_to_ascending_dry_run(monkeypatch):
     seen = {}
 
-    def fake(projects, by, descending=False, apply=False):
+    def fake(projects, by, descending=False, apply=False, tag_order=None):
         seen.update(descending=descending, apply=apply)
         return {}
     monkeypatch.setattr(server.sorter, "run_sort", fake)
@@ -64,7 +64,7 @@ def test_sort_project_defaults_to_ascending_dry_run(monkeypatch):
 
 
 def test_sort_project_wraps_errors(monkeypatch):
-    def boom(projects, by, descending=False, apply=False):
+    def boom(projects, by, descending=False, apply=False, tag_order=None):
         raise RuntimeError("bad key")
     monkeypatch.setattr(server.sorter, "run_sort", boom)
     out = server.sort_project(["Training"], "nonsense")
@@ -76,6 +76,22 @@ def test_sort_project_docstring_lists_every_valid_key():
     doc = server.sort_project.__doc__
     for key in server.sorter.SORT_KEYS:
         assert key in doc, key
+
+
+def test_sort_project_forwards_tag_order(monkeypatch):
+    seen = {}
+
+    def fake(projects, by, descending=False, apply=False, tag_order=None):
+        seen["tag_order"] = tag_order
+        return {}
+    monkeypatch.setattr(server.sorter, "run_sort", fake)
+    server.sort_project(["Training"], "tag", tag_order=["Next", "Waiting"])
+    assert seen["tag_order"] == ["Next", "Waiting"]
+
+
+def test_sort_project_docstring_documents_tag():
+    """`tag` is not in SORT_KEYS, so assert the docstring mentions it explicitly."""
+    assert "tag" in server.sort_project.__doc__
 
 
 def test_omnifocus_status_counts(monkeypatch):
