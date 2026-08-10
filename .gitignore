@@ -12,6 +12,9 @@ wheels/
 # Local secrets / config (keep .env.example tracked)
 .env
 
+# Per-machine Claude Code settings (shared .claude/settings.json stays tracked)
+.claude/settings.local.json
+
 # Local agent working files (task ledgers, scratch issues, design docs) — never publish
 .superpowers/
 .scratch/
