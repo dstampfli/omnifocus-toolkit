@@ -11,10 +11,15 @@ AI-assisted automation for **OmniFocus**, powered by the Claude API:
   no tokens).
 - **MCP server** — expose all three tools to Claude Desktop / Cowork so a
   scheduled agent can run them for you.
+- **Omni Automation plug-ins** — an OmniFocus Kanban board with a `Reviewed`
+  lane, and an OmniOutliner strikethrough toggle. No AI, no API key.
 
-Every tool reads your OmniFocus data locally via `osascript` (JXA) and is
-**dry-run by default** — they report what they would do and change nothing until
-you pass `--apply`.
+Every one of the Python tools reads your OmniFocus data locally via `osascript`
+(JXA) and is **dry-run by default** — they report what they would do and change
+nothing until you pass `--apply`.
+
+Despite the name, this repo covers the Omni suite broadly rather than OmniFocus
+alone: one of the plug-ins targets **OmniOutliner**.
 
 **Discussion:** there's an announcement and Q&A thread on the OmniFocus forum —
 [omnifocus-toolkit — AI-assisted Inbox triage and task enrichment](https://discourse.omnigroup.com/t/omnifocus-toolkit-ai-assisted-inbox-triage-and-task-enrichment-open-source/71526).
@@ -190,3 +195,53 @@ The first run prompts macOS to allow **Claude Desktop** to control OmniFocus
 (System Settings → Privacy & Security → Automation). `ANTHROPIC_API_KEY` is read
 from the repo's `.env` (loaded relative to the server file, so the launch cwd
 does not matter).
+
+## Omni Automation plug-ins
+
+Two Omni Automation (OmniJS) plug-ins live alongside the Python tools. These run
+**inside the Omni apps** rather than through `osascript`, make no Claude API
+call, and — unlike the CLI tools — act immediately with no dry-run stage.
+
+- `omnifocus_automation/strikethrough.omnijs` — **OmniOutliner 6 Pro**: toggles
+  strikethrough on the selected text, or on the topic text of the selected rows.
+- `omnifocus_kanban_plugin/of-kanban-board.omnifocusjs` — **OmniFocus**: a
+  vendored copy of the upstream Kanban Board plug-in with an added `Reviewed`
+  lane, pairing with the task reviewer's `Kanban ▸ Reviewed` tag. See
+  [its README](omnifocus_kanban_plugin/README.md) for what was changed and how to
+  install it.
+
+### Strikethrough toggle (`omnifocus_automation/strikethrough.omnijs`)
+
+OmniOutliner **Pro** ships no Strikethrough command anywhere in its menu bar —
+`Format ▸ Font` has Bold, Italic, Underline, Outline and more, but not
+strikethrough. (Essentials *does* have one under its flatter Format menu, so its
+documentation is misleading here.) Because the command isn't in a menu, the
+**Keyboard Shortcuts…** window can't bind it either. This plug-in adds it as an
+Automation menu action.
+
+Install it with **Automation ▸ Configure…** (Manage Plug-Ins), which registers
+the plug-in and reports load errors clearly. To trigger it with a key, wire a
+Keyboard Maestro macro — group scoped to OmniOutliner, a Hot Key trigger such as
+`⌃⇧X`, and a **Select or Show a Menu Item** action pointing at Automation ▸ Toggle
+Strikethrough. Use KM's popup pickers rather than typing the menu path, since
+they read the live menu bar.
+
+Behavior worth knowing:
+
+- **Multi-row selections toggle each row independently**, so a mixed selection
+  (some rows struck, some not) won't normalize to a single state.
+- **The menu item greys out when nothing is selected**, and Keyboard Maestro
+  fails *silently* against a greyed item — the usual cause of "the hotkey does
+  nothing". The other two: Keyboard Maestro Engine missing from System Settings →
+  Privacy & Security → Accessibility, or testing with a row highlighted in the
+  gutter instead of text selected inside the cell.
+- Toggling reads only the *locally* set strikethrough, so text inheriting
+  strikethrough from a named style reads as "not struck": the first press sets an
+  explicit local strikethrough (visually a no-op) and the second clears it.
+
+If the plug-in ever breaks, the fallback is a Named Style: create one with
+strikethrough set via the Style Attributes inspector, then set Settings →
+Keyboard → "Apply Named Styles With" to **Control + number** — the style's
+position in the Named Styles list is its number. It's blunter than a toggle,
+though: the number shifts if you reorder the list, and removal is
+`Format ▸ Clear Style` (`⌃⌘⌫`), which strips other local styling too.

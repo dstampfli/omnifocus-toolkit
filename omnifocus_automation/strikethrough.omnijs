@@ -1,0 +1,29 @@
+/*{
+	"type": "action",
+	"targets": ["omnioutliner"],
+	"author": "Dave",
+	"identifier": "com.dave.oo.toggle-strikethrough",
+	"version": "1.2",
+	"description": "Toggles strikethrough on the selected text or the topic text of the selected rows.",
+	"label": "Toggle Strikethrough",
+	"shortLabel": "Strikethrough"
+}*/
+(() => {
+	const action = new PlugIn.Action(function(selection, sender){
+		const attr = Style.Attribute.StrikethroughStyle
+		selection.styles.forEach(style => {
+			const local = style.localValueForAttribute(attr)
+			if (!local) {
+				style.set(attr, UnderlineStyle.Single)
+			} else {
+				style.set(attr, null)
+			}
+		})
+	})
+
+	action.validate = function(selection, sender){
+		return (selection.styles.length > 0)
+	}
+
+	return action
+})();
