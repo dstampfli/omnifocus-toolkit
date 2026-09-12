@@ -189,3 +189,119 @@ class BoardState:
         self.task_ids = {c["id"] for c in board["cards"]}
         self.lane_ids = {lane["id"] for lane in board["lanes"]}
         self.loaded = True
+
+
+# ------------------------------- JXA programs -----------------------------
+
+# OmniJS snippet shared by both programs: serializes one task as a raw card.
+# Expects `laneIds` ({tagId: true} for the Kanban children) and `maxNoteChars`
+# to be defined by the enclosing program. Dates are epoch ms or null (numeric
+# comparison sidesteps timezone/format ambiguity, as in the sorter); `tags` are
+# the task's non-lane leaf tag names; the raw note is capped here and turned
+# into an excerpt on the Python side.
+_CARD_OMNIJS = (
+    "  const ms = d => d ? d.getTime() : null;"
+    "  const statusName = t => {"
+    "    const s = String(t.taskStatus);"
+    "    const i = s.indexOf(': ');"
+    "    return (i === -1) ? s : s.slice(i + 2, -1);"
+    "  };"
+    "  const cardOf = (t, laneId) => {"
+    "    const proj = t.containingProject;"
+    "    return {"
+    "      id: t.id.primaryKey,"
+    "      name: t.name,"
+    "      lane_id: laneId,"
+    "      project: proj ? { id: proj.id.primaryKey, name: proj.name } : null,"
+    "      due: ms(t.dueDate),"
+    "      defer: ms(t.deferDate),"
+    "      added: ms(t.added),"
+    "      flagged: !!t.flagged,"
+    "      status: statusName(t),"
+    "      tags: (t.tags || []).filter(x => !laneIds[x.id.primaryKey]).map(x => x.name),"
+    "      note: String(t.note || '').slice(0, maxNoteChars)"
+    "    };"
+    "  };"
+)
+
+# Reads the Kanban parent's children (the lanes, in OmniFocus order) and every
+# open task in each lane, entirely in OmniJS (tags need the bridge). A task in
+# two lanes is emitted for the first lane only. argv[0] = JSON
+# {kanbanTag, maxNoteChars}; only those two config values reach the source.
+READ_BOARD_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const omni =
+        "(() => {" +
+        "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
+        "  const maxNoteChars = " + JSON.stringify(cfg.maxNoteChars) + ";" +
+        "  const parent = flattenedTags.byName(kanbanName);" +
+        "  if (!parent) return JSON.stringify({ error: 'missing_kanban_tag' });" +
+        "  const lanes = parent.children || [];" +
+        "  const laneIds = {};" +
+        "  lanes.forEach(l => { laneIds[l.id.primaryKey] = true; });" +
+        __CARD__ +
+        "  const seen = {}; const cards = [];" +
+        "  lanes.forEach(l => {" +
+        "    (l.tasks || []).forEach(t => {" +
+        "      if (!t) return;" +
+        "      if (t.completed || t.taskStatus === Task.Status.Dropped) return;" +
+        "      const id = t.id.primaryKey;" +
+        "      if (seen[id]) return;" +
+        "      seen[id] = true;" +
+        "      cards.push(cardOf(t, l.id.primaryKey));" +
+        "    });" +
+        "  });" +
+        "  return JSON.stringify({" +
+        "    lanes: lanes.map(l => ({ id: l.id.primaryKey, name: l.name }))," +
+        "    cards: cards" +
+        "  });" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+""".replace("__CARD__", json.dumps(_CARD_OMNIJS))
+
+# Re-tags one task into one lane — the plug-in's exact operation
+# (removeTags(all lanes) + addTag(lane)) — and returns the task's fresh card.
+# argv[0] = JSON {kanbanTag, maxNoteChars, taskId, laneId}. The ids were
+# validated (well-formed + seen in the last read) before this runs; the lane
+# is checked again here to be a child of the Kanban parent.
+MOVE_TASK_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const omni =
+        "(() => {" +
+        "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
+        "  const maxNoteChars = " + JSON.stringify(cfg.maxNoteChars) + ";" +
+        "  const taskId = " + JSON.stringify(cfg.taskId) + ";" +
+        "  const laneId = " + JSON.stringify(cfg.laneId) + ";" +
+        "  const parent = flattenedTags.byName(kanbanName);" +
+        "  if (!parent) return JSON.stringify({ error: 'missing_kanban_tag' });" +
+        "  const lanes = parent.children || [];" +
+        "  const laneIds = {};" +
+        "  lanes.forEach(l => { laneIds[l.id.primaryKey] = true; });" +
+        "  const lane = Tag.byIdentifier(laneId);" +
+        "  if (!lane || !laneIds[laneId]) return JSON.stringify({ error: 'lane is not a Kanban lane' });" +
+        "  const task = Task.byIdentifier(taskId);" +
+        "  if (!task) return JSON.stringify({ error: 'task no longer exists' });" +
+        __CARD__ +
+        "  task.removeTags(lanes);" +
+        "  task.addTag(lane);" +
+        "  return JSON.stringify({ card: cardOf(task, laneId) });" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+""".replace("__CARD__", json.dumps(_CARD_OMNIJS))
+
+
+def read_board(kanban_tag, max_note_chars=MAX_NOTE_CHARS):
+    cfg = json.dumps({"kanbanTag": kanban_tag, "maxNoteChars": max_note_chars})
+    return run_jxa_or_raise(READ_BOARD_JXA, cfg)
+
+
+def move_task(kanban_tag, task_id, lane_id, max_note_chars=MAX_NOTE_CHARS):
+    cfg = json.dumps({"kanbanTag": kanban_tag, "maxNoteChars": max_note_chars,
+                      "taskId": task_id, "laneId": lane_id})
+    return run_jxa_or_raise(MOVE_TASK_JXA, cfg)

@@ -1,13 +1,19 @@
 import json
+import re
 
 import pytest
 
+import omnifocus_kanban_board as board_mod
 from omnifocus_kanban_board import (
+    MOVE_TASK_JXA,
+    READ_BOARD_JXA,
     SORT_KEYS,
     BoardState,
     MoveError,
     build_board,
     finish_card,
+    move_task,
+    read_board,
     sort_cards,
     validate_move,
 )
@@ -181,3 +187,50 @@ def test_board_state_remembers_ids_from_board():
     assert state.loaded
     assert state.task_ids == {"a", "b"}
     assert state.lane_ids == {"L1", "L2"}
+
+
+# ------------------------------- JXA programs -----------------------------
+
+def _cfg_fields(source):
+    return set(re.findall(r"cfg\.(\w+)", source))
+
+
+def test_read_jxa_interpolates_only_config():
+    assert _cfg_fields(READ_BOARD_JXA) == {"kanbanTag", "maxNoteChars"}
+    assert "JSON.stringify(cfg.kanbanTag)" in READ_BOARD_JXA
+    assert "evaluateJavascript" in READ_BOARD_JXA
+
+
+def test_move_jxa_interpolates_only_ids_and_config():
+    assert _cfg_fields(MOVE_TASK_JXA) == {"kanbanTag", "maxNoteChars", "taskId", "laneId"}
+    assert "JSON.stringify(cfg.taskId)" in MOVE_TASK_JXA
+    assert "JSON.stringify(cfg.laneId)" in MOVE_TASK_JXA
+    # The plug-in's exact re-tag operation.
+    assert "task.removeTags(lanes)" in MOVE_TASK_JXA
+    assert "task.addTag(lane)" in MOVE_TASK_JXA
+
+
+def test_jxa_sources_share_the_card_serializer():
+    assert "cardOf" in READ_BOARD_JXA and "cardOf" in MOVE_TASK_JXA
+    assert "__CARD__" not in READ_BOARD_JXA and "__CARD__" not in MOVE_TASK_JXA
+
+
+def test_read_board_passes_json_config(monkeypatch):
+    calls = []
+    monkeypatch.setattr(board_mod, "run_jxa_or_raise",
+                        lambda script, *args: calls.append((script, args)) or {"lanes": [], "cards": []})
+    assert read_board("Kanban", 123) == {"lanes": [], "cards": []}
+    script, args = calls[0]
+    assert script is READ_BOARD_JXA
+    assert json.loads(args[0]) == {"kanbanTag": "Kanban", "maxNoteChars": 123}
+
+
+def test_move_task_passes_json_config(monkeypatch):
+    calls = []
+    monkeypatch.setattr(board_mod, "run_jxa_or_raise",
+                        lambda script, *args: calls.append((script, args)) or {"card": {}})
+    assert move_task("Kanban", "t1", "L1", 50) == {"card": {}}
+    script, args = calls[0]
+    assert script is MOVE_TASK_JXA
+    assert json.loads(args[0]) == {"kanbanTag": "Kanban", "maxNoteChars": 50,
+                                   "taskId": "t1", "laneId": "L1"}
