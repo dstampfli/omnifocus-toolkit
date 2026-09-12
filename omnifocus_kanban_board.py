@@ -137,3 +137,55 @@ def build_board(raw, sort_key="due", max_note_chars=MAX_NOTE_CHARS):
         seen.add(raw_card["id"])
         cards.append(finish_card(raw_card, max_note_chars))
     return {"lanes": lanes, "cards": sort_cards(cards, sort_key)}
+
+
+# ------------------------------ move validation ---------------------------
+
+# OmniFocus identifiers are short base64url-ish strings. Anything else never
+# reaches the OmniJS source.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class MoveError(ValueError):
+    """A move request that must be refused before any osascript call."""
+
+
+def validate_move(body, task_ids, lane_ids, loaded=True):
+    """Return (task_id, lane_id) from a /api/move body, or raise MoveError.
+
+    Both ids must be well-formed AND present in the id sets captured by the
+    most recent successful board read — the same whitelisting rule the other
+    tools' write paths use, so only identifiers OmniFocus itself handed us are
+    ever embedded in the write source."""
+    if not isinstance(body, dict):
+        raise MoveError("request body must be a JSON object")
+    found = {}
+    for field in ("task_id", "lane_id"):
+        value = body.get(field)
+        if not isinstance(value, str) or not _ID_RE.match(value):
+            raise MoveError(f"{field} must be an OmniFocus identifier")
+        found[field] = value
+    if not loaded:
+        raise MoveError("load the board before moving a task")
+    if found["task_id"] not in task_ids:
+        raise MoveError("unknown task; refresh the board")
+    if found["lane_id"] not in lane_ids:
+        raise MoveError("unknown lane; refresh the board")
+    return found["task_id"], found["lane_id"]
+
+
+class BoardState:
+    """Id sets from the most recent successful read, plus the lock that
+    serializes every osascript call (so two quick drops cannot interleave
+    their Apple Events and a read never observes a half-applied move)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.loaded = False
+        self.task_ids = set()
+        self.lane_ids = set()
+
+    def remember(self, board):
+        self.task_ids = {c["id"] for c in board["cards"]}
+        self.lane_ids = {lane["id"] for lane in board["lanes"]}
+        self.loaded = True

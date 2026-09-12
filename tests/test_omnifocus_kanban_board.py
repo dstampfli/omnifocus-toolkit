@@ -4,9 +4,12 @@ import pytest
 
 from omnifocus_kanban_board import (
     SORT_KEYS,
+    BoardState,
+    MoveError,
     build_board,
     finish_card,
     sort_cards,
+    validate_move,
 )
 
 
@@ -130,3 +133,51 @@ def test_build_board_drops_cards_in_unknown_lanes():
 def test_build_board_result_is_json_serializable():
     raw = {"lanes": LANES, "cards": [card("a", due=1, flagged=True, tags=["x"])]}
     json.dumps(build_board(raw))
+
+
+# ------------------------------- validate_move ----------------------------
+
+TASKS = {"t1", "t2"}
+LANE_IDS = {"L1", "L2"}
+
+
+def test_validate_move_accepts_known_ids():
+    assert validate_move({"task_id": "t1", "lane_id": "L2"}, TASKS, LANE_IDS) == ("t1", "L2")
+
+
+@pytest.mark.parametrize("body", [None, [], "x", {"task_id": "t1"},
+                                  {"lane_id": "L1"}, {"task_id": 1, "lane_id": "L1"}])
+def test_validate_move_rejects_malformed_body(body):
+    with pytest.raises(MoveError):
+        validate_move(body, TASKS, LANE_IDS)
+
+
+@pytest.mark.parametrize("bad", ["", "has space", "quote'x", "a" * 65, "semi;colon"])
+def test_validate_move_rejects_malformed_ids(bad):
+    with pytest.raises(MoveError):
+        validate_move({"task_id": bad, "lane_id": "L1"}, TASKS | {bad}, LANE_IDS)
+    with pytest.raises(MoveError):
+        validate_move({"task_id": "t1", "lane_id": bad}, TASKS, LANE_IDS | {bad})
+
+
+def test_validate_move_rejects_unknown_task_and_lane():
+    with pytest.raises(MoveError, match="task"):
+        validate_move({"task_id": "nope", "lane_id": "L1"}, TASKS, LANE_IDS)
+    with pytest.raises(MoveError, match="lane"):
+        validate_move({"task_id": "t1", "lane_id": "nope"}, TASKS, LANE_IDS)
+
+
+def test_validate_move_requires_a_prior_read():
+    with pytest.raises(MoveError, match="load the board"):
+        validate_move({"task_id": "t1", "lane_id": "L1"}, set(), set(), loaded=False)
+
+
+# ------------------------------- BoardState -------------------------------
+
+def test_board_state_remembers_ids_from_board():
+    state = BoardState()
+    assert not state.loaded
+    state.remember({"lanes": LANES, "cards": [card("a"), card("b", lane="L2")]})
+    assert state.loaded
+    assert state.task_ids == {"a", "b"}
+    assert state.lane_ids == {"L1", "L2"}
