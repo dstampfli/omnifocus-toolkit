@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanban</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #EDF0F3;
+    --lane: #E2E7EC;
+    --lane-edge: #D3DAE1;
+    --card: #FFFFFF;
+    --card-edge: #CDD5DD;
+    --ink: #17212B;
+    --ink-2: #4B5865;
+    --ink-3: #7A8794;
+    --rail: #2B5D8C;
+    --rail-soft: #B9CFE4;
+    --drop: #DCE8F4;
+    --overdue: #B3261E;
+    --soon: #8A5A00;
+    --flag: #C2410C;
+    --font: "Seravek", "Avenir Next", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161A1F;
+      --lane: #1E242B;
+      --lane-edge: #2A323B;
+      --card: #272F38;
+      --card-edge: #37414C;
+      --ink: #E7EBEF;
+      --ink-2: #AEB8C2;
+      --ink-3: #7C8792;
+      --rail: #7FB2E5;
+      --rail-soft: #33506B;
+      --drop: #243447;
+      --overdue: #F28B82;
+      --soon: #E3B341;
+      --flag: #F59E6B;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.35;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+  :focus-visible { outline: 2px solid var(--rail); outline-offset: 2px; }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 18px 28px 10px;
+  }
+  h1 { font-size: 28px; font-weight: 500; margin: 0; letter-spacing: -0.01em; }
+  .controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .controls label { display: flex; align-items: center; gap: 6px; }
+  select, button {
+    font: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--card);
+    border: 1px solid var(--card-edge);
+    border-radius: 6px;
+    padding: 5px 9px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--rail); }
+
+  #banner {
+    margin: 0 28px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    background: var(--card);
+    border-left: 4px solid var(--overdue);
+    font-size: 14px;
+  }
+
+  #board {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 16px;
+    padding: 14px 28px 24px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .lane {
+    flex: 1 0 260px;
+    max-width: 360px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--lane);
+    border: 1px solid var(--lane-edge);
+    border-radius: 10px;
+  }
+  .lane.over { background: var(--drop); border-color: var(--rail); }
+
+  /* The rail: one line running through every lane header, a node per lane. */
+  .lane-head {
+    position: relative;
+    padding: 26px 16px 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .lane-head::before {
+    content: "";
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    right: 0;
+    height: 2px;
+    background: var(--rail-soft);
+  }
+  .lane + .lane .lane-head::before { left: -17px; }
+  .lane:last-child .lane-head::before { right: 16px; }
+  .lane-head::after {
+    content: "";
+    position: absolute;
+    top: 10px;
+    left: 16px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--rail);
+  }
+  .lane-name { font-size: 20px; font-weight: 500; }
+  .lane-count { font-size: 14px; color: var(--ink-3); }
+
+  .cards {
+    flex: 1;
+    min-height: 40px;
+    overflow-y: auto;
+    padding: 0 10px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .empty { color: var(--ink-3); font-size: 14px; padding: 4px 6px 10px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-edge);
+    border-radius: 6px;
+    padding: 10px 12px;
+    cursor: grab;
+  }
+  .card:active { cursor: grabbing; }
+  .card.dragging { opacity: 0.45; }
+  .card a { color: inherit; text-decoration: none; font-weight: 500; }
+  .card a:hover { text-decoration: underline; text-decoration-color: var(--rail); }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 5px;
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .due.overdue { color: var(--overdue); font-weight: 500; }
+  .due.soon { color: var(--soon); font-weight: 500; }
+  .flag { color: var(--flag); }
+  .tags { color: var(--ink-3); }
+
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    max-width: 80vw;
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: var(--ink);
+    color: var(--bg);
+    font-size: 14px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .lane { transition: background-color 0.12s, border-color 0.12s; }
+    .card { transition: opacity 0.12s; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Kanban</h1>
+  <div class="controls">
+    <label>Project
+      <select id="project"><option value="all">All</option></select>
+    </label>
+    <label>Sort
+      <select id="sort">
+        <option value="due">Due date</option>
+        <option value="title">Title</option>
+        <option value="project">Project</option>
+        <option value="added">Added</option>
+      </select>
+    </label>
+    <button id="refresh" type="button">Refresh</button>
+    <span id="updated"></span>
+  </div>
+</header>
+<div id="banner" hidden></div>
+<main id="board"></main>
+<div id="toast" hidden></div>
+
+<script>
+(() => {
+  const $ = (sel) => document.querySelector(sel);
+  const INBOX = " inbox"; // filter value for cards with no project
+  const state = {
+    board: null,
+    filter: "all",
+    sort: "due",
+    dragging: false,
+    inflight: 0,
+  };
+
+  // ------------------------------ data ------------------------------
+
+  async function load() {
+    try {
+      const resp = await fetch("/api/board", { cache: "no-store" });
+      const data = await resp.json();
+      if (!resp.ok) {
+        showBanner(data.error || ("The board server returned " + resp.status + "."));
+        return;
+      }
+      state.board = data;
+      hideBanner();
+      render();
+      $("#updated").textContent = "Updated " + new Date().toLocaleTimeString();
+    } catch (err) {
+      showBanner("Couldn't reach the board server. Is it still running? (" + err.message + ")");
+    }
+  }
+
+  async function moveCard(card, laneId) {
+    const fromLane = card.lane_id;
+    card.lane_id = laneId;          // optimistic
+    state.inflight += 1;
+    render();
+    try {
+      const resp = await fetch("/api/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Kanban": "1" },
+        body: JSON.stringify({ task_id: card.id, lane_id: laneId }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || ("server returned " + resp.status));
+      Object.assign(card, data.card);
+    } catch (err) {
+      card.lane_id = fromLane;
+      toast("Couldn't move “" + card.name + "”: " + err.message);
+    } finally {
+      state.inflight -= 1;
+      render();
+    }
+  }
+
+  // ------------------------------ sorting ------------------------------
+
+  const projectName = (c) => (c.project && c.project.name) || "";
+  const title = (c) => (c.name || "").toLowerCase();
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const tie = (a, b) =>
+    cmp(projectName(a).toLowerCase(), projectName(b).toLowerCase()) || cmp(title(a), title(b));
+
+  function sortCards(cards, key) {
+    const list = cards.slice();
+    if (key === "title") {
+      return list.sort((a, b) => cmp(title(a), title(b)) ||
+        cmp(projectName(a).toLowerCase(), projectName(b).toLowerCase()));
+    }
+    const value = key === "project" ? (c) => projectName(c) || null
+                : key === "added" ? (c) => c.added
+                : (c) => c.due;
+    const valued = list.filter((c) => value(c) !== null && value(c) !== undefined);
+    const unvalued = list.filter((c) => value(c) === null || value(c) === undefined);
+    if (key === "project") {
+      valued.sort((a, b) =>
+        cmp(projectName(a).toLowerCase(), projectName(b).toLowerCase()) ||
+        cmp(a.due === null, b.due === null) || cmp(a.due || 0, b.due || 0) ||
+        cmp(title(a), title(b)));
+    } else if (key === "added") {
+      valued.sort((a, b) => cmp(b.added, a.added) || tie(a, b));
+    } else {
+      valued.sort((a, b) => cmp(a.due, b.due) || tie(a, b));
+    }
+    return valued.concat(unvalued);
+  }
+
+  // ------------------------------ rendering ------------------------------
+
+  function matchesFilter(card) {
+    if (state.filter === "all") return true;
+    if (state.filter === INBOX) return !card.project;
+    return !!card.project && card.project.id === state.filter;
+  }
+
+  function renderFilter() {
+    const select = $("#project");
+    const projects = new Map();
+    let hasInbox = false;
+    for (const c of state.board.cards) {
+      if (c.project) projects.set(c.project.id, c.project.name);
+      else hasInbox = true;
+    }
+    const entries = [...projects.entries()].sort((a, b) => cmp(a[1].toLowerCase(), b[1].toLowerCase()));
+    if (hasInbox) entries.push([INBOX, "Inbox"]);
+    const known = new Set(entries.map((e) => e[0]));
+    if (state.filter !== "all" && !known.has(state.filter)) state.filter = "all";
+    select.textContent = "";
+    const all = document.createElement("option");
+    all.value = "all";
+    all.textContent = "All";
+    select.appendChild(all);
+    for (const [id, name] of entries) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = name;
+      select.appendChild(opt);
+    }
+    select.value = state.filter;
+  }
+
+  function formatDue(card) {
+    const d = new Date(card.due);
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    const text = d.toLocaleDateString(undefined,
+      sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" });
+    return "Due " + text;
+  }
+
+  function cardEl(card) {
+    const el = document.createElement("article");
+    el.className = "card";
+    el.draggable = true;
+    el.dataset.id = card.id;
+    if (card.note_excerpt) el.title = card.note_excerpt;
+
+    const link = document.createElement("a");
+    link.href = "omnifocus:///task/" + encodeURIComponent(card.id);
+    link.textContent = card.name;
+    el.appendChild(link);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const project = document.createElement("span");
+    project.textContent = card.project ? card.project.name : "Inbox";
+    meta.appendChild(project);
+    if (card.due !== null && card.due !== undefined) {
+      const due = document.createElement("span");
+      due.className = "due" + (card.status === "Overdue" ? " overdue" : card.status === "DueSoon" ? " soon" : "");
+      due.textContent = formatDue(card);
+      meta.appendChild(due);
+    }
+    if (card.flagged) {
+      const flag = document.createElement("span");
+      flag.className = "flag";
+      flag.textContent = "Flagged";
+      meta.appendChild(flag);
+    }
+    if (card.tags && card.tags.length) {
+      const tags = document.createElement("span");
+      tags.className = "tags";
+      tags.textContent = card.tags.join(", ");
+      meta.appendChild(tags);
+    }
+    el.appendChild(meta);
+
+    el.addEventListener("dragstart", (ev) => {
+      state.dragging = true;
+      ev.dataTransfer.setData("text/plain", card.id);
+      ev.dataTransfer.effectAllowed = "move";
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => {
+      state.dragging = false;
+      el.classList.remove("dragging");
+      document.querySelectorAll(".lane.over").forEach((l) => l.classList.remove("over"));
+    });
+    return el;
+  }
+
+  function laneEl(lane, cards) {
+    const el = document.createElement("section");
+    el.className = "lane";
+    el.dataset.id = lane.id;
+
+    const head = document.createElement("div");
+    head.className = "lane-head";
+    const name = document.createElement("span");
+    name.className = "lane-name";
+    name.textContent = lane.name;
+    const count = document.createElement("span");
+    count.className = "lane-count";
+    count.textContent = String(cards.length);
+    head.appendChild(name);
+    head.appendChild(count);
+    el.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "cards";
+    if (cards.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Nothing here";
+      list.appendChild(empty);
+    }
+    for (const c of cards) list.appendChild(cardEl(c));
+    el.appendChild(list);
+
+    el.addEventListener("dragover", (ev) => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move";
+      el.classList.add("over");
+    });
+    el.addEventListener("dragleave", (ev) => {
+      if (!el.contains(ev.relatedTarget)) el.classList.remove("over");
+    });
+    el.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      el.classList.remove("over");
+      const id = ev.dataTransfer.getData("text/plain");
+      const card = state.board.cards.find((c) => c.id === id);
+      if (!card || card.lane_id === lane.id) return;
+      moveCard(card, lane.id);
+    });
+    return el;
+  }
+
+  function render() {
+    const b = state.board;
+    if (!b) return;
+    document.title = b.kanban_tag;
+    $("#title").textContent = b.kanban_tag;
+    renderFilter();
+    const visible = b.cards.filter(matchesFilter);
+    const board = $("#board");
+    board.textContent = "";
+    for (const lane of b.lanes) {
+      const cards = sortCards(visible.filter((c) => c.lane_id === lane.id), state.sort);
+      board.appendChild(laneEl(lane, cards));
+    }
+  }
+
+  // ------------------------------ chrome ------------------------------
+
+  function showBanner(message) {
+    const el = $("#banner");
+    el.textContent = message;
+    el.hidden = false;
+  }
+  function hideBanner() { $("#banner").hidden = true; }
+
+  let toastTimer = null;
+  function toast(message) {
+    const el = $("#toast");
+    el.textContent = message;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
+  }
+
+  $("#project").addEventListener("change", (ev) => { state.filter = ev.target.value; render(); });
+  $("#sort").addEventListener("change", (ev) => { state.sort = ev.target.value; render(); });
+  $("#refresh").addEventListener("click", load);
+  setInterval(() => { if (!state.dragging && state.inflight === 0) load(); }, 30000);
+  load();
+})();
+</script>
+</body>
+</html>

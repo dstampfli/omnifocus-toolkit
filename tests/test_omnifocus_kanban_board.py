@@ -10,6 +10,7 @@ import omnifocus_kanban_board as board_mod
 from omnifocus_common import JxaError
 from omnifocus_kanban_board import (
     MISSING_TAG_MESSAGE,
+    PAGE_PATH,
     MOVE_TASK_JXA,
     READ_BOARD_JXA,
     SORT_KEYS,
@@ -441,3 +442,14 @@ def test_serve_reports_port_in_use(tmp_path, capsys):
         assert "Could not listen" in capsys.readouterr().err
     finally:
         taken.server_close()
+
+
+# --------------------------------- the page -------------------------------
+
+def test_real_page_exists_and_loads_nothing_external():
+    html = PAGE_PATH.read_text(encoding="utf-8")
+    assert "<title>" in html
+    assert "/api/board" in html and "/api/move" in html
+    assert '"X-Kanban"' in html
+    assert "http://" not in html and "https://" not in html
+    assert "<link" not in html and 'src="' not in html
