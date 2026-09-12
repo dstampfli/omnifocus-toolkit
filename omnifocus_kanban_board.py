@@ -305,3 +305,63 @@ def move_task(kanban_tag, task_id, lane_id, max_note_chars=MAX_NOTE_CHARS):
     cfg = json.dumps({"kanbanTag": kanban_tag, "maxNoteChars": max_note_chars,
                       "taskId": task_id, "laneId": lane_id})
     return run_jxa_or_raise(MOVE_TASK_JXA, cfg)
+
+
+# --------------------------------- BoardApp -------------------------------
+
+MISSING_TAG_MESSAGE = ("No tag named {tag!r}. Run the Kanban plug-in's "
+                       "Display Board action first.")
+
+
+class BoardApp:
+    """The board's endpoint logic, independent of HTTP: each method returns
+    (status, payload). `read`/`move` are injectable for tests."""
+
+    def __init__(self, kanban_tag=KANBAN_TAG, *, page_path=PAGE_PATH,
+                 read=read_board, move=move_task, max_note_chars=MAX_NOTE_CHARS,
+                 now=None):
+        self.kanban_tag = kanban_tag
+        self.page_path = page_path
+        self.read = read
+        self.move = move
+        self.max_note_chars = max_note_chars
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.state = BoardState()
+
+    def page(self):
+        return Path(self.page_path).read_bytes()
+
+    def get_board(self):
+        with self.state.lock:
+            try:
+                raw = self.read(self.kanban_tag, self.max_note_chars)
+            except JxaError as e:
+                return 500, {"error": str(e)}
+            if raw.get("error") == "missing_kanban_tag":
+                return 409, {"error": MISSING_TAG_MESSAGE.format(tag=self.kanban_tag)}
+            if "error" in raw:
+                return 500, {"error": str(raw["error"])}
+            board = build_board(raw, max_note_chars=self.max_note_chars)
+            self.state.remember(board)
+        board["kanban_tag"] = self.kanban_tag
+        board["read_at"] = self.now().isoformat(timespec="seconds")
+        return 200, board
+
+    def post_move(self, body, has_header):
+        if not has_header:
+            return 400, {"error": "missing X-Kanban header"}
+        try:
+            task_id, lane_id = validate_move(
+                body, self.state.task_ids, self.state.lane_ids, self.state.loaded)
+        except MoveError as e:
+            return 400, {"error": str(e)}
+        with self.state.lock:
+            try:
+                raw = self.move(self.kanban_tag, task_id, lane_id, self.max_note_chars)
+            except JxaError as e:
+                return 500, {"error": str(e)}
+        if raw.get("error") == "missing_kanban_tag":
+            return 409, {"error": MISSING_TAG_MESSAGE.format(tag=self.kanban_tag)}
+        if "error" in raw:
+            return 400, {"error": str(raw["error"])}
+        return 200, {"card": finish_card(raw["card"], self.max_note_chars)}

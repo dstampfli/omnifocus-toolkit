@@ -1,13 +1,17 @@
 import json
 import re
+from datetime import datetime, timezone
 
 import pytest
 
 import omnifocus_kanban_board as board_mod
+from omnifocus_common import JxaError
 from omnifocus_kanban_board import (
+    MISSING_TAG_MESSAGE,
     MOVE_TASK_JXA,
     READ_BOARD_JXA,
     SORT_KEYS,
+    BoardApp,
     BoardState,
     MoveError,
     build_board,
@@ -234,3 +238,110 @@ def test_move_task_passes_json_config(monkeypatch):
     assert script is MOVE_TASK_JXA
     assert json.loads(args[0]) == {"kanbanTag": "Kanban", "maxNoteChars": 50,
                                    "taskId": "t1", "laneId": "L1"}
+
+
+# --------------------------------- BoardApp -------------------------------
+
+RAW = {"lanes": LANES, "cards": [card("a", due=None, note="n"), card("b", due=5, lane="L2")]}
+
+
+def make_app(read=None, move=None, tmp_path=None):
+    page = (tmp_path / "index.html") if tmp_path else None
+    if page:
+        page.write_text("<title>x</title>")
+    return BoardApp(
+        "Kanban",
+        page_path=page,
+        read=read or (lambda tag, n: json.loads(json.dumps(RAW))),
+        move=move or (lambda tag, t, l, n: {"card": card(t, lane=l)}),
+        max_note_chars=100,
+        now=lambda: datetime(2026, 9, 12, 10, 30, 5, tzinfo=timezone.utc),
+    )
+
+
+def test_get_board_returns_board_with_tag_and_timestamp():
+    app = make_app()
+    status, payload = app.get_board()
+    assert status == 200
+    assert payload["kanban_tag"] == "Kanban"
+    assert payload["read_at"] == "2026-09-12T10:30:05+00:00"
+    assert payload["lanes"] == LANES
+    assert ids(payload["cards"]) == ["b", "a"]
+    assert app.state.task_ids == {"a", "b"} and app.state.lane_ids == {"L1", "L2"}
+
+
+def test_get_board_passes_tag_and_note_cap_to_read():
+    seen = []
+    app = make_app(read=lambda tag, n: seen.append((tag, n)) or RAW)
+    app.get_board()
+    assert seen == [("Kanban", 100)]
+
+
+def test_get_board_maps_missing_tag_to_409():
+    app = make_app(read=lambda tag, n: {"error": "missing_kanban_tag"})
+    status, payload = app.get_board()
+    assert status == 409
+    assert payload == {"error": MISSING_TAG_MESSAGE.format(tag="Kanban")}
+    assert not app.state.loaded
+
+
+def test_get_board_maps_jxa_error_to_500():
+    def boom(tag, n):
+        raise JxaError("osascript failed:\nOmniFocus got an error")
+    status, payload = make_app(read=boom).get_board()
+    assert status == 500
+    assert "OmniFocus got an error" in payload["error"]
+
+
+def test_post_move_requires_header():
+    app = make_app()
+    app.get_board()
+    status, payload = app.post_move({"task_id": "a", "lane_id": "L2"}, has_header=False)
+    assert status == 400 and "X-Kanban" in payload["error"]
+
+
+def test_post_move_rejects_before_any_read():
+    status, payload = make_app().post_move({"task_id": "a", "lane_id": "L2"}, True)
+    assert status == 400 and "load the board" in payload["error"]
+
+
+def test_post_move_rejects_unknown_ids_without_calling_omnifocus():
+    calls = []
+    app = make_app(move=lambda *a: calls.append(a))
+    app.get_board()
+    status, _ = app.post_move({"task_id": "zzz", "lane_id": "L2"}, True)
+    assert status == 400 and calls == []
+
+
+def test_post_move_happy_path_returns_finished_card():
+    calls = []
+
+    def move(tag, t, l, n):
+        calls.append((tag, t, l, n))
+        return {"card": card(t, lane=l, note="moved note")}
+    app = make_app(move=move)
+    app.get_board()
+    status, payload = app.post_move({"task_id": "a", "lane_id": "L2"}, True)
+    assert status == 200
+    assert calls == [("Kanban", "a", "L2", 100)]
+    assert payload["card"]["lane_id"] == "L2"
+    assert payload["card"]["note_excerpt"] == "moved note"
+    assert "note" not in payload["card"]
+
+
+def test_post_move_maps_omnijs_error_to_400_and_jxa_error_to_500():
+    app = make_app(move=lambda *a: {"error": "task no longer exists"})
+    app.get_board()
+    assert app.post_move({"task_id": "a", "lane_id": "L2"}, True)[0] == 400
+
+    def boom(*a):
+        raise JxaError("osascript failed:\nnope")
+    app = make_app(move=boom)
+    app.get_board()
+    status, payload = app.post_move({"task_id": "a", "lane_id": "L2"}, True)
+    assert status == 500 and "nope" in payload["error"]
+
+
+def test_page_reads_file(tmp_path):
+    app = make_app(tmp_path=tmp_path)
+    assert app.page() == b"<title>x</title>"
