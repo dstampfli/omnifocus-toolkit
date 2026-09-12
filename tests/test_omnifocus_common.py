@@ -232,3 +232,58 @@ def test_positive_int_env_rejects_non_positive(monkeypatch):
     monkeypatch.setenv("WIDGET_COUNT", "0")
     with pytest.raises(SystemExit):
         _positive_int_env("WIDGET_COUNT", "3")
+
+
+# ------------------------------- run_jxa ---------------------------------
+
+import pytest
+
+import omnifocus_common
+from omnifocus_common import JxaError, run_jxa, run_jxa_or_raise
+
+
+class _Result:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _patch_run(monkeypatch, result):
+    calls = []
+
+    def fake_run(cmd, capture_output, text):
+        calls.append(cmd)
+        return result
+
+    monkeypatch.setattr(omnifocus_common.subprocess, "run", fake_run)
+    return calls
+
+
+def test_run_jxa_or_raise_returns_parsed_json(monkeypatch):
+    calls = _patch_run(monkeypatch, _Result(0, '{"ok": 1}\n'))
+    assert run_jxa_or_raise("function run(){}", "a", "b") == {"ok": 1}
+    assert calls[0] == ["osascript", "-l", "JavaScript", "-e",
+                        "function run(){}", "a", "b"]
+
+
+def test_run_jxa_or_raise_raises_on_nonzero_exit(monkeypatch):
+    _patch_run(monkeypatch, _Result(1, "", "execution error: boom"))
+    with pytest.raises(JxaError) as info:
+        run_jxa_or_raise("x")
+    assert "boom" in str(info.value)
+
+
+def test_run_jxa_or_raise_raises_on_non_json(monkeypatch):
+    _patch_run(monkeypatch, _Result(0, "not json"))
+    with pytest.raises(JxaError) as info:
+        run_jxa_or_raise("x")
+    assert "not json" in str(info.value)
+
+
+def test_run_jxa_still_exits_on_failure(monkeypatch, capsys):
+    _patch_run(monkeypatch, _Result(1, "", "execution error: boom"))
+    with pytest.raises(SystemExit) as info:
+        run_jxa("x")
+    assert info.value.code == 1
+    assert "boom" in capsys.readouterr().err

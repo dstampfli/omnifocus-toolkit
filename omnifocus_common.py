@@ -4,8 +4,9 @@
 Turns an OmniFocus task into model-ready content: cleaned note text plus vision
 content blocks (PDF/image) extracted from the task's attachments via the OmniJS
 bridge. Pure helpers here have no OmniFocus dependency and are unit-tested; the
-osascript/OmniJS I/O (run_jxa, fetch_attachment_b64) is the I/O boundary and is
-not unit-tested.
+osascript/OmniJS I/O (run_jxa, run_jxa_or_raise, fetch_attachment_b64) is the
+I/O boundary — only run_jxa/run_jxa_or_raise's subprocess handling is
+unit-tested (with subprocess.run patched).
 """
 
 import base64
@@ -164,23 +165,35 @@ def build_task_content(
     return [{"type": "text", "text": header}] + vision_blocks
 
 
-def run_jxa(script, *args):
+class JxaError(RuntimeError):
+    """osascript exited nonzero or printed non-JSON; args[0] is the message."""
+
+
+def run_jxa_or_raise(script, *args):
     """Run a JXA program via osascript and return its JSON stdout as a dict.
-    Exits with a clear message on a nonzero return or non-JSON output."""
+    Raises JxaError (never exits) so long-lived callers such as the Kanban
+    board server can report the failure and keep running."""
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", script, *args],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        print("osascript failed:", file=sys.stderr)
-        print(result.stderr.strip(), file=sys.stderr)
-        raise SystemExit(1)
+        raise JxaError("osascript failed:\n" + result.stderr.strip())
     try:
         return json.loads(result.stdout.strip())
     except json.JSONDecodeError:
-        print("osascript returned unexpected output:", file=sys.stderr)
-        print(result.stdout.strip(), file=sys.stderr)
+        raise JxaError("osascript returned unexpected output:\n"
+                       + result.stdout.strip())
+
+
+def run_jxa(script, *args):
+    """Run a JXA program via osascript and return its JSON stdout as a dict.
+    Exits with a clear message on a nonzero return or non-JSON output."""
+    try:
+        return run_jxa_or_raise(script, *args)
+    except JxaError as e:
+        print(str(e), file=sys.stderr)
         raise SystemExit(1)
 
 
