@@ -365,3 +365,92 @@ class BoardApp:
         if "error" in raw:
             return 400, {"error": str(raw["error"])}
         return 200, {"card": finish_card(raw["card"], self.max_note_chars)}
+
+
+# ------------------------------- HTTP server ------------------------------
+
+class KanbanHandler(BaseHTTPRequestHandler):
+    """Thin plumbing from HTTP to BoardApp (available as self.server.app)."""
+
+    def _send(self, status, payload, content_type="application/json; charset=utf-8"):
+        body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        app = self.server.app
+        path = self.path.split("?", 1)[0]
+        if path == "/":
+            self._send(200, app.page(), "text/html; charset=utf-8")
+        elif path == "/api/board":
+            self._send(*app.get_board())
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        app = self.server.app
+        if self.path.split("?", 1)[0] != "/api/move":
+            self._send(404, {"error": "not found"})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(length) or b"null")
+        except ValueError:
+            body = None
+        has_header = self.headers.get("X-Kanban") is not None
+        self._send(*app.post_move(body, has_header))
+
+    def log_message(self, fmt, *args):
+        # One stderr line per request (including the 30 s auto-refresh) is
+        # noise for a personal tool; failures are reported to the page instead.
+        pass
+
+
+def make_server(app, port, host="127.0.0.1"):
+    server = ThreadingHTTPServer((host, port), KanbanHandler)
+    server.app = app
+    return server
+
+
+def serve(app, port, open_browser=True):
+    try:
+        server = make_server(app, port)
+    except OSError as e:
+        print(f"Could not listen on 127.0.0.1:{port}: {e}", file=sys.stderr)
+        raise SystemExit(1)
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    print(f"Kanban board: {url}  (Ctrl-C to stop)")
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+# ----------------------------------- CLI -----------------------------------
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Serve a drag-and-drop Kanban board over the OmniFocus "
+                    "Kanban tag lanes at http://127.0.0.1:<port>/.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"port to listen on (default {DEFAULT_PORT})")
+    parser.add_argument("--no-open", action="store_true",
+                        help="don't open the board in your browser on start")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    serve(BoardApp(), args.port, open_browser=not args.no_open)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,5 +1,7 @@
+import http.client
 import json
 import re
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -16,8 +18,11 @@ from omnifocus_kanban_board import (
     MoveError,
     build_board,
     finish_card,
+    make_server,
     move_task,
+    parse_args,
     read_board,
+    serve,
     sort_cards,
     validate_move,
 )
@@ -345,3 +350,94 @@ def test_post_move_maps_omnijs_error_to_400_and_jxa_error_to_500():
 def test_page_reads_file(tmp_path):
     app = make_app(tmp_path=tmp_path)
     assert app.page() == b"<title>x</title>"
+
+
+# ------------------------------- HTTP server ------------------------------
+
+@pytest.fixture
+def server(tmp_path):
+    app = make_app(tmp_path=tmp_path)
+    srv = make_server(app, 0)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield srv
+    srv.shutdown()
+    srv.server_close()
+
+
+def request(srv, method, path, body=None, headers=None):
+    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+    conn.request(method, path, body=body, headers=headers or {})
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    return resp, data
+
+
+def test_server_binds_loopback_only(server):
+    assert server.server_address[0] == "127.0.0.1"
+
+
+def test_get_root_serves_page(server):
+    resp, data = request(server, "GET", "/")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "text/html; charset=utf-8"
+    assert resp.getheader("Cache-Control") == "no-store"
+    assert data == b"<title>x</title>"
+
+
+def test_get_board_over_http(server):
+    resp, data = request(server, "GET", "/api/board")
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "application/json; charset=utf-8"
+    payload = json.loads(data)
+    assert payload["lanes"] == LANES and ids(payload["cards"]) == ["b", "a"]
+
+
+def test_unknown_routes_404(server):
+    assert request(server, "GET", "/nope")[0].status == 404
+    assert request(server, "POST", "/nope")[0].status == 404
+
+
+def test_post_move_over_http(server):
+    request(server, "GET", "/api/board")
+    body = json.dumps({"task_id": "a", "lane_id": "L2"})
+    resp, data = request(server, "POST", "/api/move", body,
+                         {"Content-Type": "application/json"})
+    assert resp.status == 400 and "X-Kanban" in json.loads(data)["error"]
+    resp, data = request(server, "POST", "/api/move", body,
+                         {"Content-Type": "application/json", "X-Kanban": "1"})
+    assert resp.status == 200
+    assert json.loads(data)["card"]["lane_id"] == "L2"
+
+
+def test_post_move_with_invalid_json_is_400(server):
+    request(server, "GET", "/api/board")
+    resp, data = request(server, "POST", "/api/move", "{not json",
+                         {"X-Kanban": "1"})
+    assert resp.status == 400
+    assert "JSON object" in json.loads(data)["error"]
+
+
+# ------------------------------------ CLI ---------------------------------
+
+def test_parse_args_defaults():
+    args = parse_args([])
+    assert args.port == 8765 and args.no_open is False
+
+
+def test_parse_args_overrides():
+    args = parse_args(["--port", "9000", "--no-open"])
+    assert args.port == 9000 and args.no_open is True
+
+
+def test_serve_reports_port_in_use(tmp_path, capsys):
+    app = make_app(tmp_path=tmp_path)
+    taken = make_server(app, 0)
+    try:
+        with pytest.raises(SystemExit) as info:
+            serve(app, taken.server_address[1], open_browser=False)
+        assert info.value.code == 1
+        assert "Could not listen" in capsys.readouterr().err
+    finally:
+        taken.server_close()
