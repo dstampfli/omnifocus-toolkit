@@ -155,6 +155,22 @@ Behavior worth knowing:
   matching is case-insensitive and by leaf name (so `--tag Reviewed` matches a
   nested `Kanban ▸ Reviewed`). Tasks with none of the listed tags sort last.
 
+## Kanban board (`omnifocus_kanban_board.py`)
+
+A local drag-and-drop board over the same `Kanban` tag lanes the [Kanban plug-in](omnifocus_kanban_plugin/README.md) uses (`Reviewed → To Do → In Progress → Waiting → Done`). Each column is one lane tag; every open task carrying a lane tag appears as a card, across all projects. Dropping a card on another column re-tags the task exactly like the plug-in's actions do (remove every lane tag, add the target), so the board, the plug-in, and the task reviewer stay in agreement.
+
+```bash
+python3 omnifocus_kanban_board.py              # serve http://127.0.0.1:8765/ and open it
+python3 omnifocus_kanban_board.py --port 9000  # another port
+python3 omnifocus_kanban_board.py --no-open    # don't open the browser
+```
+
+- Filter by project, sort within columns by due date (default), title, project, or added; click a title to open the task in OmniFocus. The board refreshes every 30 s (paused while you drag).
+- Dropping on **Done** only tags; completing is still done in OmniFocus. Completed and dropped tasks never appear.
+- **There is no `--apply` flag**: each drop is your explicit action and writes immediately. This is the one tool in the toolkit that departs from dry-run-by-default.
+- The server binds `127.0.0.1` only, and moves require a custom `X-Kanban` request header that other web pages in your browser cannot send without a CORS preflight the server never answers. No Claude API calls are made.
+- If the `Kanban` tag does not exist yet, run the plug-in's **Display Board** action once to create the lanes.
+
 ## MCP server (Claude Desktop / Cowork)
 
 `omnifocus_mcp_server.py` is a local **stdio** MCP server (built on `mcp[cli]`
