@@ -85,8 +85,8 @@ def sort_project(projects: list[str], by: str, descending: bool = False,
 
     For by="tag", pass tag_order: a priority-ordered list of tag names. Each
     task sorts by the position of its highest-priority (earliest-listed) tag;
-    matching is case-insensitive and by leaf tag name (so "Reviewed" matches a
-    nested "Kanban : Reviewed" tag). tag_order is ignored for the other keys.
+    matching is case-insensitive and by leaf tag name (so "Waiting" matches a
+    nested "Kanban : Waiting" tag). tag_order is ignored for the other keys.
 
     Tasks with no value for the chosen key (e.g. no due date, or no listed tag)
     always sort last, in both directions. Set descending=True to reverse. Only
