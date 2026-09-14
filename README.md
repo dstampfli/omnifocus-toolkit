@@ -165,7 +165,7 @@ python3 omnifocus_kanban_board.py --port 9000  # another port
 python3 omnifocus_kanban_board.py --no-open    # don't open the browser
 ```
 
-- Filter by project, sort within columns by due date (default), title, project, or added; click a title to open the task in OmniFocus. The board refreshes every 30 s (paused while you drag).
+- Filter by project and/or tag (the tag list is built from the cards' non-lane tags; `Untagged` matches cards with none), sort within columns by due date (default), title, project, or added; click a title to open the task in OmniFocus. The board refreshes every 30 s (paused while you drag).
 - Dropping on **Done** only tags; completing is still done in OmniFocus. Completed and dropped tasks never appear.
 - **There is no `--apply` flag**: each drop is your explicit action and writes immediately. This is the one tool in the toolkit that departs from dry-run-by-default.
 - The server binds `127.0.0.1` only, and moves require a custom `X-Kanban` request header that other web pages in your browser cannot send without a CORS preflight the server never answers. No Claude API calls are made.

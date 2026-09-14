@@ -209,6 +209,9 @@
     <label>Project
       <select id="project"><option value="all">All</option></select>
     </label>
+    <label>Tag
+      <select id="tag"><option value="all">All</option></select>
+    </label>
     <label>Sort
       <select id="sort">
         <option value="due">Due date</option>
@@ -228,10 +231,12 @@
 <script>
 (() => {
   const $ = (sel) => document.querySelector(sel);
-  const INBOX = " inbox"; // filter value for cards with no project
+  const INBOX = " inbox"; // project-filter value for cards with no project
+  const UNTAGGED = " untagged"; // tag-filter value for cards with no (non-lane) tags
   const state = {
     board: null,
-    filter: "all",
+    project: "all",
+    tag: "all",
     sort: "due",
     dragging: false,
     inflight: 0,
@@ -313,24 +318,26 @@
 
   // ------------------------------ rendering ------------------------------
 
-  function matchesFilter(card) {
-    if (state.filter === "all") return true;
-    if (state.filter === INBOX) return !card.project;
-    return !!card.project && card.project.id === state.filter;
+  function matchesProject(card) {
+    if (state.project === "all") return true;
+    if (state.project === INBOX) return !card.project;
+    return !!card.project && card.project.id === state.project;
   }
 
-  function renderFilter() {
-    const select = $("#project");
-    const projects = new Map();
-    let hasInbox = false;
-    for (const c of state.board.cards) {
-      if (c.project) projects.set(c.project.id, c.project.name);
-      else hasInbox = true;
-    }
-    const entries = [...projects.entries()].sort((a, b) => cmp(a[1].toLowerCase(), b[1].toLowerCase()));
-    if (hasInbox) entries.push([INBOX, "Inbox"]);
+  function matchesTag(card) {
+    if (state.tag === "all") return true;
+    const tags = card.tags || [];
+    if (state.tag === UNTAGGED) return tags.length === 0;
+    return tags.includes(state.tag);
+  }
+
+  const matchesFilter = (card) => matchesProject(card) && matchesTag(card);
+
+  // Rebuilds a filter <select> as "All" plus the given [value, label] entries.
+  // Returns `current`, or "all" if that value is no longer on offer.
+  function fillFilter(select, entries, current) {
     const known = new Set(entries.map((e) => e[0]));
-    if (state.filter !== "all" && !known.has(state.filter)) state.filter = "all";
+    const value = current !== "all" && !known.has(current) ? "all" : current;
     select.textContent = "";
     const all = document.createElement("option");
     all.value = "all";
@@ -342,7 +349,28 @@
       opt.textContent = name;
       select.appendChild(opt);
     }
-    select.value = state.filter;
+    select.value = value;
+    return value;
+  }
+
+  function renderFilters() {
+    const projects = new Map();
+    const tags = new Set();
+    let hasInbox = false;
+    let hasUntagged = false;
+    for (const c of state.board.cards) {
+      if (c.project) projects.set(c.project.id, c.project.name);
+      else hasInbox = true;
+      if (c.tags && c.tags.length) c.tags.forEach((t) => tags.add(t));
+      else hasUntagged = true;
+    }
+    const byLabel = (a, b) => cmp(a[1].toLowerCase(), b[1].toLowerCase());
+    const projectEntries = [...projects.entries()].sort(byLabel);
+    if (hasInbox) projectEntries.push([INBOX, "Inbox"]);
+    const tagEntries = [...tags].map((t) => [t, t]).sort(byLabel);
+    if (hasUntagged) tagEntries.push([UNTAGGED, "Untagged"]);
+    state.project = fillFilter($("#project"), projectEntries, state.project);
+    state.tag = fillFilter($("#tag"), tagEntries, state.tag);
   }
 
   function formatDue(card) {
@@ -456,7 +484,7 @@
     if (!b) return;
     document.title = b.kanban_tag;
     $("#title").textContent = b.kanban_tag;
-    renderFilter();
+    renderFilters();
     const visible = b.cards.filter(matchesFilter);
     const board = $("#board");
     board.textContent = "";
@@ -484,7 +512,8 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
   }
 
-  $("#project").addEventListener("change", (ev) => { state.filter = ev.target.value; render(); });
+  $("#project").addEventListener("change", (ev) => { state.project = ev.target.value; render(); });
+  $("#tag").addEventListener("change", (ev) => { state.tag = ev.target.value; render(); });
   $("#sort").addEventListener("change", (ev) => { state.sort = ev.target.value; render(); });
   $("#refresh").addEventListener("click", load);
   setInterval(() => { if (!state.dragging && state.inflight === 0) load(); }, 30000);
