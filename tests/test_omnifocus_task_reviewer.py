@@ -34,7 +34,7 @@ def test_load_config_defaults(monkeypatch):
     (model, tag, kanban, fetches, max_att, max_note,
      x_token, x_max, workers) = _load_config()
     assert model == "claude-sonnet-5"
-    assert tag == "reviewed"
+    assert tag == "Reviewed"  # OmniFocus tag lookup is case-sensitive
     assert kanban == "Kanban"
     assert fetches == 3
     assert max_att == 10485760
@@ -166,6 +166,17 @@ def test_build_write_config_includes_kanban_tag():
     cfg = build_write_config(reviewed, "Reviewed", "Kanban")
     assert cfg["reviewTag"] == "Reviewed"
     assert cfg["kanbanTag"] == "Kanban"
+
+
+def test_write_jxa_keeps_review_tag_out_of_kanban_lanes():
+    """Reviewed tasks must not land on the Kanban board: the write program
+    resolves the review tag at the top level, un-nests a legacy Kanban child of
+    that name, and never creates it under the Kanban parent."""
+    from omnifocus_task_reviewer import WRITE_JXA
+    assert "tags.byName(tagName)" in WRITE_JXA
+    assert "moveTags([nested], tags.ending)" in WRITE_JXA
+    assert "new Tag(tagName, parent)" not in WRITE_JXA
+    assert "moveTags([existing], parent)" not in WRITE_JXA
 
 
 def test_build_write_config_strips_medium_promo_from_note():
