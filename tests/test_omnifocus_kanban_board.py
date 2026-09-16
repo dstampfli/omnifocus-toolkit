@@ -451,5 +451,13 @@ def test_real_page_exists_and_loads_nothing_external():
     assert "<title>" in html
     assert "/api/board" in html and "/api/move" in html
     assert '"X-Kanban"' in html
-    assert "http://" not in html and "https://" not in html
-    assert "<link" not in html and 'src="' not in html
+    # The only <link> allowed is the inline data: favicon -- nothing fetched.
+    links = re.findall(r"<link\b[^>]*>", html)
+    assert links, "expected the inline favicon <link>"
+    for link in links:
+        assert re.search(r"""href=["']data:""", link), link
+    # Strip data: URIs before scanning for URLs: the favicon SVG carries an
+    # xmlns identifier (http://www.w3.org/2000/svg) that is never fetched.
+    stripped = re.sub(r"""(["'])data:.*?\1""", r"\1\1", html)
+    assert "http://" not in stripped and "https://" not in stripped
+    assert 'src="' not in stripped
