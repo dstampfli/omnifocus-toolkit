@@ -46,18 +46,42 @@ _HIDDEN_STATUSES = {"Completed", "Dropped"}
 
 
 # ----------------------------- configuration -----------------------------
+# The board's default column order, by lane name. Lanes named here come first
+# in this order; any other lane follows in OmniFocus order. This only shapes
+# the board payload — the tags in OmniFocus are never reordered.
+DEFAULT_LANE_ORDER = ("Waiting", "To Do", "In Progress", "Done", "Reviewed")
+
+
+def parse_lane_order(value):
+    """Comma-separated lane names -> tuple; blank falls back to the default."""
+    names = tuple(n.strip() for n in (value or "").split(",") if n.strip())
+    return names or DEFAULT_LANE_ORDER
+
+
 def _load_config():
     # Same env vars the reviewer uses: KANBAN_TAG names the parent tag whose
     # children are the lanes; MAX_NOTE_CHARS caps the note read per task.
+    # KANBAN_LANE_ORDER is board-only: the default column order by lane name.
     kanban = os.environ.get("KANBAN_TAG", "Kanban").strip() or "Kanban"
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
-    return kanban, max_note
+    lane_order = parse_lane_order(os.environ.get("KANBAN_LANE_ORDER", ""))
+    return kanban, max_note, lane_order
 
 
-KANBAN_TAG, MAX_NOTE_CHARS = _load_config()
+KANBAN_TAG, MAX_NOTE_CHARS, KANBAN_LANE_ORDER = _load_config()
 
 
 # ------------------------------ pure helpers ------------------------------
+def order_lanes(lanes, order):
+    """Lanes whose name (exact, case-sensitive like OmniFocus) appears in
+    `order` first, in that order; every other lane after them in the given
+    (OmniFocus) order. Names with no matching lane are ignored."""
+    by_name = {lane["name"]: lane for lane in lanes}
+    named = [by_name[n] for n in order if n in by_name]
+    placed = {id(lane) for lane in named}
+    return named + [lane for lane in lanes if id(lane) not in placed]
+
+
 
 def _project_name(card):
     return ((card.get("project") or {}).get("name")) or ""
@@ -155,16 +179,18 @@ def build_tags(raw_tags, cards):
     return tags
 
 
-def build_board(raw, sort_key="due", max_note_chars=MAX_NOTE_CHARS):
+def build_board(raw, sort_key="due", max_note_chars=MAX_NOTE_CHARS,
+                lane_order=DEFAULT_LANE_ORDER):
     """Assemble the API board from the read stage's raw payload.
 
-    Lanes keep OmniFocus order. Completed/dropped cards are hidden, a task
+    Lanes are ordered by `lane_order` (see order_lanes; an empty order keeps
+    OmniFocus order). Completed/dropped cards are hidden, a task
     carrying two lane tags is shown in the first lane only (the raw payload is
     emitted in lane order), and cards are sorted by `sort_key`. `tags` is the
     non-lane tag tree (see build_tags) and each card's `tag_ids` include its
     ancestors; a raw payload with no `tags` yields an empty tree."""
-    lanes = [{"id": lane["id"], "name": lane["name"]}
-             for lane in raw.get("lanes", [])]
+    lanes = order_lanes([{"id": lane["id"], "name": lane["name"]}
+                         for lane in raw.get("lanes", [])], lane_order)
     lane_ids = {lane["id"] for lane in lanes}
     raw_tags = raw.get("tags") or []
     parent_of = {t["id"]: t.get("parent_id") for t in raw_tags}
@@ -382,12 +408,13 @@ class BoardApp:
 
     def __init__(self, kanban_tag=KANBAN_TAG, *, page_path=PAGE_PATH,
                  read=read_board, move=move_task, max_note_chars=MAX_NOTE_CHARS,
-                 now=None):
+                 lane_order=KANBAN_LANE_ORDER, now=None):
         self.kanban_tag = kanban_tag
         self.page_path = page_path
         self.read = read
         self.move = move
         self.max_note_chars = max_note_chars
+        self.lane_order = lane_order
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.state = BoardState()
 
@@ -404,7 +431,8 @@ class BoardApp:
                 return 409, {"error": MISSING_TAG_MESSAGE.format(tag=self.kanban_tag)}
             if "error" in raw:
                 return 500, {"error": str(raw["error"])}
-            board = build_board(raw, max_note_chars=self.max_note_chars)
+            board = build_board(raw, max_note_chars=self.max_note_chars,
+                                lane_order=self.lane_order)
             self.state.remember(board)
         board["kanban_tag"] = self.kanban_tag
         board["read_at"] = self.now().isoformat(timespec="seconds")

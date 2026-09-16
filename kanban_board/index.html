@@ -147,6 +147,20 @@
   .filter-list .name { flex: 1; }
   .filter-list .count { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
   .filter-list .muted .name { color: var(--ink-3); }
+  /* Columns dropdown rows: the label (checkbox = shown) plus up/down arrows. */
+  .filter-list .lane-row { display: flex; align-items: center; padding-right: 8px; }
+  .filter-list .lane-row label { flex: 1; }
+  .lane-move { display: inline-flex; gap: 2px; }
+  .lane-move button {
+    border: 0;
+    background: none;
+    padding: 2px 4px;
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1;
+  }
+  .lane-move button:hover { color: var(--rail); }
+  .lane-move button:disabled { color: var(--lane-edge); cursor: default; }
 
   #banner {
     margin: 0 28px;
@@ -296,6 +310,20 @@
         <ul class="filter-list"></ul>
       </div>
     </div>
+    <div class="filter" id="columns">
+      <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false">
+        <span class="filter-name">Columns</span>
+        <span class="filter-value">All</span>
+        <span class="filter-caret">&#9662;</span>
+      </button>
+      <div class="filter-panel" hidden>
+        <div class="filter-head">
+          <span class="filter-summary"></span>
+          <button type="button" class="filter-clear">Reset</button>
+        </div>
+        <ul class="filter-list"></ul>
+      </div>
+    </div>
     <label>Sort
       <select id="sort">
         <option value="due">Due date</option>
@@ -319,10 +347,14 @@
   const UNTAGGED = " untagged"; // tag-filter id for cards with no (non-lane) tags
   // Filters hold the selected ids; an empty set means "show everything".
   // Within a filter the picks are ORed, across the two filters ANDed.
+  // Column order/visibility is this browser's own tweak on top of the server's
+  // default order, kept in localStorage by lane name (see loadColumns).
+  const COLUMNS_KEY = "kanban.columns";
   const state = {
     board: null,
     projects: new Set(),
     tags: new Set(),
+    columns: loadColumns(),
     sort: "due",
     dragging: false,
     inflight: 0,
@@ -495,6 +527,121 @@
     state.tags = fillFilter($("#tag-filter"), tagEntries, state.tags, "tags");
   }
 
+  // ------------------------------ columns ------------------------------
+
+  // {order: [lane names] | null, hidden: Set(lane names)}. null order means
+  // "use the server's order". Storage may be blocked or corrupt; then this
+  // browser simply has no tweaks.
+  function loadColumns() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(COLUMNS_KEY) || "null");
+      if (raw && typeof raw === "object") {
+        const strs = (v) => (Array.isArray(v) ? v.filter((n) => typeof n === "string") : null);
+        return { order: strs(raw.order), hidden: new Set(strs(raw.hidden) || []) };
+      }
+    } catch (err) { /* fall through */ }
+    return { order: null, hidden: new Set() };
+  }
+  function saveColumns() {
+    try {
+      localStorage.setItem(COLUMNS_KEY, JSON.stringify({
+        order: state.columns.order, hidden: [...state.columns.hidden],
+      }));
+    } catch (err) { /* storage unavailable: the tweak lasts until reload */ }
+  }
+
+  // The server's lanes (already in its default order) arranged by the saved
+  // order: lanes it names first, in that order; any it doesn't after, in
+  // server order — so a renamed or new lane still shows up, at the end.
+  function arrangedLanes() {
+    const lanes = state.board.lanes;
+    const order = state.columns.order;
+    if (!order) return lanes.slice();
+    const rank = new Map(order.map((n, i) => [n, i]));
+    const known = lanes.filter((l) => rank.has(l.name))
+      .sort((a, b) => rank.get(a.name) - rank.get(b.name));
+    return known.concat(lanes.filter((l) => !rank.has(l.name)));
+  }
+  function visibleLanes() {
+    return arrangedLanes().filter((l) => !state.columns.hidden.has(l.name));
+  }
+  function moveLane(name, delta) {
+    const names = arrangedLanes().map((l) => l.name);
+    const i = names.indexOf(name);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= names.length) return;
+    [names[i], names[j]] = [names[j], names[i]];
+    state.columns.order = names;
+    saveColumns();
+    render();
+  }
+  function setLaneHidden(name, hidden) {
+    if (hidden) state.columns.hidden.add(name); else state.columns.hidden.delete(name);
+    saveColumns();
+    render();
+  }
+  function resetColumns() {
+    state.columns = { order: null, hidden: new Set() };
+    try { localStorage.removeItem(COLUMNS_KEY); } catch (err) { /* ignore */ }
+    render();
+  }
+
+  // Rebuilds the Columns dropdown: one row per lane in the arranged order —
+  // checkbox (shown), name, visible-card count, up/down arrows. Restores focus
+  // to the control that had it, since a click re-renders the rows.
+  function renderColumns(countByLane) {
+    const root = $("#columns");
+    const lanes = arrangedLanes();
+    const active = document.activeElement;
+    const keyOf = (el) => el.dataset.lane + "|" + (el.dataset.dir || "show");
+    const focusKey = root.contains(active) && active.dataset && active.dataset.lane ? keyOf(active) : null;
+
+    const list = root.querySelector(".filter-list");
+    list.textContent = "";
+    lanes.forEach((lane, i) => {
+      const li = document.createElement("li");
+      li.className = "lane-row";
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.lane = lane.name;
+      box.checked = !state.columns.hidden.has(lane.name);
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = lane.name;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = countByLane.get(lane.id) || 0;
+      label.append(box, name, count);
+      const move = document.createElement("span");
+      move.className = "lane-move";
+      for (const [dir, glyph, disabled] of [["up", "\u25B2", i === 0], ["down", "\u25BC", i === lanes.length - 1]]) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = glyph;
+        b.dataset.lane = lane.name;
+        b.dataset.dir = dir;
+        b.disabled = disabled;
+        b.setAttribute("aria-label", "Move " + lane.name + " " + dir);
+        move.appendChild(b);
+      }
+      li.append(label, move);
+      list.appendChild(li);
+    });
+    if (focusKey !== null) {
+      const again = [...list.querySelectorAll("[data-lane]")].find((el) => keyOf(el) === focusKey);
+      if (again && !again.disabled) again.focus();
+    }
+
+    const hidden = lanes.filter((l) => state.columns.hidden.has(l.name)).length;
+    const custom = state.columns.order !== null || hidden > 0;
+    root.querySelector(".filter-value").textContent =
+      hidden ? (lanes.length - hidden) + " of " + lanes.length : "All";
+    root.querySelector(".filter-summary").textContent =
+      !custom ? "Default order" : hidden ? hidden + " hidden" : "Custom order";
+    root.querySelector(".filter-clear").disabled = !custom;
+  }
+
   function setFilterOpen(root, open) {
     root.classList.toggle("open", open);
     root.querySelector(".filter-panel").hidden = !open;
@@ -637,9 +784,12 @@
     $("#title").textContent = b.kanban_tag;
     renderFilters();
     const visible = b.cards.filter(matchesFilter);
+    const countByLane = new Map();
+    for (const c of visible) countByLane.set(c.lane_id, (countByLane.get(c.lane_id) || 0) + 1);
+    renderColumns(countByLane);
     const board = $("#board");
     board.textContent = "";
-    for (const lane of b.lanes) {
+    for (const lane of visibleLanes()) {
       const cards = sortCards(visible.filter((c) => c.lane_id === lane.id), state.sort);
       board.appendChild(laneEl(lane, cards));
     }
@@ -665,8 +815,28 @@
 
   setupFilter($("#project-filter"), () => state.projects);
   setupFilter($("#tag-filter"), () => state.tags);
+  (() => {
+    const root = $("#columns");
+    root.querySelector(".filter-button").addEventListener("click", () => {
+      const open = !root.classList.contains("open");
+      closeFilters(root);
+      setFilterOpen(root, open);
+    });
+    const list = root.querySelector(".filter-list");
+    list.addEventListener("change", (ev) => {
+      if (ev.target instanceof HTMLInputElement) setLaneHidden(ev.target.dataset.lane, !ev.target.checked);
+    });
+    list.addEventListener("click", (ev) => {
+      const b = ev.target instanceof Element ? ev.target.closest("button[data-dir]") : null;
+      if (b) moveLane(b.dataset.lane, b.dataset.dir === "up" ? -1 : 1);
+    });
+    root.querySelector(".filter-clear").addEventListener("click", resetColumns);
+  })();
+  // composedPath() is fixed at dispatch, so a click on a control whose row
+  // was rebuilt by its own handler (the column arrows) still counts as inside.
   document.addEventListener("click", (ev) => {
-    if (!(ev.target instanceof Element) || !ev.target.closest(".filter")) closeFilters();
+    const inside = ev.composedPath().some((n) => n instanceof Element && n.classList.contains("filter"));
+    if (!inside) closeFilters();
   });
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeFilters(); });
   $("#sort").addEventListener("change", (ev) => { state.sort = ev.target.value; render(); });

@@ -9,6 +9,7 @@ import pytest
 import omnifocus_kanban_board as board_mod
 from omnifocus_common import JxaError
 from omnifocus_kanban_board import (
+    DEFAULT_LANE_ORDER,
     MISSING_TAG_MESSAGE,
     PAGE_PATH,
     MOVE_TASK_JXA,
@@ -23,7 +24,9 @@ from omnifocus_kanban_board import (
     finish_card,
     make_server,
     move_task,
+    order_lanes,
     parse_args,
+    parse_lane_order,
     read_board,
     serve,
     sort_cards,
@@ -135,7 +138,7 @@ def test_finish_card_handles_missing_optional_fields():
 
 def test_build_board_preserves_lane_order_and_sorts_cards():
     raw = {"lanes": LANES, "cards": [card("a", due=None), card("b", due=5)]}
-    board = build_board(raw)
+    board = build_board(raw, lane_order=())
     assert board["lanes"] == LANES
     assert ids(board["cards"]) == ["b", "a"]
     assert all("note_excerpt" in c for c in board["cards"])
@@ -219,6 +222,54 @@ def test_build_board_tolerates_missing_tag_tree():
     board = build_board({"lanes": LANES, "cards": [card("a", tag_ids=["x"])]})
     assert board["tags"] == []
     assert board["cards"][0]["tag_ids"] == ["x"]
+
+
+# ------------------------------- lane order -------------------------------
+
+def lane_names(lanes):
+    return [lane["name"] for lane in lanes]
+
+
+def test_default_lane_order():
+    assert DEFAULT_LANE_ORDER == ("Waiting", "To Do", "In Progress", "Done", "Reviewed")
+
+
+def test_parse_lane_order_splits_on_commas_and_strips():
+    assert parse_lane_order(" Done, To Do ,,Waiting ") == ("Done", "To Do", "Waiting")
+
+
+def test_parse_lane_order_blank_falls_back_to_default():
+    assert parse_lane_order("") == DEFAULT_LANE_ORDER
+    assert parse_lane_order(" , ") == DEFAULT_LANE_ORDER
+
+
+def test_order_lanes_puts_named_lanes_first_then_the_rest_in_omnifocus_order():
+    lanes = [{"id": "1", "name": "To Do"}, {"id": "2", "name": "Extra"},
+             {"id": "3", "name": "Waiting"}, {"id": "4", "name": "Other"}]
+    assert lane_names(order_lanes(lanes, ("Waiting", "To Do"))) == ["Waiting", "To Do", "Extra", "Other"]
+
+
+def test_order_lanes_matches_names_exactly():
+    lanes = [{"id": "1", "name": "to do"}, {"id": "2", "name": "Waiting"}]
+    assert lane_names(order_lanes(lanes, ("To Do", "Waiting"))) == ["Waiting", "to do"]
+
+
+def test_order_lanes_ignores_names_with_no_lane():
+    lanes = [{"id": "1", "name": "Done"}]
+    assert order_lanes(lanes, ("Waiting", "Done")) == lanes
+
+
+def test_build_board_orders_lanes_by_default_lane_order():
+    raw = {"lanes": [{"id": "a", "name": "Reviewed"}, {"id": "b", "name": "Done"},
+                     {"id": "c", "name": "To Do"}, {"id": "d", "name": "In Progress"},
+                     {"id": "e", "name": "Waiting"}],
+           "cards": []}
+    assert lane_names(build_board(raw)["lanes"]) == list(DEFAULT_LANE_ORDER)
+
+
+def test_build_board_honours_custom_lane_order():
+    board = build_board({"lanes": LANES, "cards": []}, lane_order=("Reviewed", "To Do"))
+    assert lane_names(board["lanes"]) == ["Reviewed", "To Do"]
 
 
 # ------------------------------- validate_move ----------------------------
@@ -328,7 +379,7 @@ def test_move_task_passes_json_config(monkeypatch):
 RAW = {"lanes": LANES, "cards": [card("a", due=None, note="n"), card("b", due=5, lane="L2")]}
 
 
-def make_app(read=None, move=None, tmp_path=None):
+def make_app(read=None, move=None, tmp_path=None, **kw):
     page = (tmp_path / "index.html") if tmp_path else None
     if page:
         page.write_text("<title>x</title>")
@@ -339,6 +390,7 @@ def make_app(read=None, move=None, tmp_path=None):
         move=move or (lambda tag, t, l, n: {"card": card(t, lane=l)}),
         max_note_chars=100,
         now=lambda: datetime(2026, 9, 12, 10, 30, 5, tzinfo=timezone.utc),
+        **kw,
     )
 
 
@@ -348,9 +400,16 @@ def test_get_board_returns_board_with_tag_and_timestamp():
     assert status == 200
     assert payload["kanban_tag"] == "Kanban"
     assert payload["read_at"] == "2026-09-12T10:30:05+00:00"
-    assert payload["lanes"] == LANES
+    assert payload["lanes"] == [LANES[1], LANES[0]]  # default order: To Do before Reviewed
     assert ids(payload["cards"]) == ["b", "a"]
     assert app.state.task_ids == {"a", "b"} and app.state.lane_ids == {"L1", "L2"}
+
+
+def test_get_board_applies_the_apps_lane_order():
+    app = make_app(lane_order=("Reviewed", "To Do"))
+    status, payload = app.get_board()
+    assert status == 200
+    assert payload["lanes"] == LANES
 
 
 def test_get_board_passes_tag_and_note_cap_to_read():
@@ -479,7 +538,8 @@ def test_get_board_over_http(server):
     assert resp.status == 200
     assert resp.getheader("Content-Type") == "application/json; charset=utf-8"
     payload = json.loads(data)
-    assert payload["lanes"] == LANES and ids(payload["cards"]) == ["b", "a"]
+    assert payload["lanes"] == [LANES[1], LANES[0]]  # default order: To Do before Reviewed
+    assert ids(payload["cards"]) == ["b", "a"]
 
 
 def test_unknown_routes_404(server):
