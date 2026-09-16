@@ -17,6 +17,7 @@ import re
 import sys
 import threading
 import webbrowser
+from collections import Counter
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -102,12 +103,16 @@ def sort_cards(cards, key="due"):
 
 
 def finish_card(raw_card, max_note_chars=MAX_NOTE_CHARS,
-                excerpt_chars=EXCERPT_CHARS):
+                excerpt_chars=EXCERPT_CHARS, parent_of=None):
     """Turn a raw OmniJS card into the API card: the raw `note` becomes a
-    short `note_excerpt` (cleaned with clean_note, then capped)."""
+    short `note_excerpt` (cleaned with clean_note, then capped) and the
+    task's own `tag_ids` grow to include every ancestor (via `parent_of`),
+    so a card tagged `Engagements ▸ NG` also matches a filter on
+    `Engagements`. `tags` stays the display list of leaf names."""
     card = {k: v for k, v in raw_card.items() if k != "note"}
     card.setdefault("project", None)
     card.setdefault("tags", [])
+    card["tag_ids"] = expand_tag_ids(raw_card.get("tag_ids") or [], parent_of or {})
     card.setdefault("flagged", False)
     for field in ("due", "defer", "added"):
         card.setdefault(field, None)
@@ -118,15 +123,51 @@ def finish_card(raw_card, max_note_chars=MAX_NOTE_CHARS,
     return card
 
 
+def expand_tag_ids(tag_ids, parent_of):
+    """The given tag ids plus every ancestor's id, each once, in a stable
+    order (each id, then its chain of parents). Ids missing from `parent_of`
+    are kept as-is with no ancestors."""
+    out, seen = [], set()
+    for tag_id in tag_ids:
+        cur = tag_id
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            out.append(cur)
+            cur = parent_of.get(cur)
+    return out
+
+
+def build_tags(raw_tags, cards):
+    """The filterable tag tree for the page: every raw tag (the read stage
+    emits them in OmniFocus order, parents before children, with the Kanban
+    subtree left out) plus its `depth` and a `count` of the given cards whose
+    ancestor-expanded `tag_ids` include it — so a parent's count covers its
+    descendants' cards."""
+    counts = Counter(tid for c in cards for tid in c.get("tag_ids", []))
+    depth_of = {}
+    tags = []
+    for t in raw_tags:
+        parent = t.get("parent_id")
+        depth = depth_of.get(parent, -1) + 1 if parent is not None else 0
+        depth_of[t["id"]] = depth
+        tags.append({"id": t["id"], "name": t["name"], "parent_id": parent,
+                     "depth": depth, "count": counts.get(t["id"], 0)})
+    return tags
+
+
 def build_board(raw, sort_key="due", max_note_chars=MAX_NOTE_CHARS):
     """Assemble the API board from the read stage's raw payload.
 
     Lanes keep OmniFocus order. Completed/dropped cards are hidden, a task
     carrying two lane tags is shown in the first lane only (the raw payload is
-    emitted in lane order), and cards are sorted by `sort_key`."""
+    emitted in lane order), and cards are sorted by `sort_key`. `tags` is the
+    non-lane tag tree (see build_tags) and each card's `tag_ids` include its
+    ancestors; a raw payload with no `tags` yields an empty tree."""
     lanes = [{"id": lane["id"], "name": lane["name"]}
              for lane in raw.get("lanes", [])]
     lane_ids = {lane["id"] for lane in lanes}
+    raw_tags = raw.get("tags") or []
+    parent_of = {t["id"]: t.get("parent_id") for t in raw_tags}
     seen = set()
     cards = []
     for raw_card in raw.get("cards", []):
@@ -135,8 +176,9 @@ def build_board(raw, sort_key="due", max_note_chars=MAX_NOTE_CHARS):
         if raw_card["id"] in seen or raw_card.get("lane_id") not in lane_ids:
             continue
         seen.add(raw_card["id"])
-        cards.append(finish_card(raw_card, max_note_chars))
-    return {"lanes": lanes, "cards": sort_cards(cards, sort_key)}
+        cards.append(finish_card(raw_card, max_note_chars, parent_of=parent_of))
+    return {"lanes": lanes, "tags": build_tags(raw_tags, cards),
+            "cards": sort_cards(cards, sort_key)}
 
 
 # ------------------------------ move validation ---------------------------
@@ -175,19 +217,23 @@ def validate_move(body, task_ids, lane_ids, loaded=True):
 
 
 class BoardState:
-    """Id sets from the most recent successful read, plus the lock that
-    serializes every osascript call (so two quick drops cannot interleave
-    their Apple Events and a read never observes a half-applied move)."""
+    """Id sets and the tag parent map from the most recent successful read,
+    plus the lock that serializes every osascript call (so two quick drops
+    cannot interleave their Apple Events and a read never observes a
+    half-applied move). `parent_of` lets the move path expand the returned
+    card's tag_ids exactly as the board read did."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.loaded = False
         self.task_ids = set()
         self.lane_ids = set()
+        self.parent_of = {}
 
     def remember(self, board):
         self.task_ids = {c["id"] for c in board["cards"]}
         self.lane_ids = {lane["id"] for lane in board["lanes"]}
+        self.parent_of = {t["id"]: t.get("parent_id") for t in board.get("tags", [])}
         self.loaded = True
 
 
@@ -197,8 +243,10 @@ class BoardState:
 # Expects `laneIds` ({tagId: true} for the Kanban children) and `maxNoteChars`
 # to be defined by the enclosing program. Dates are epoch ms or null (numeric
 # comparison sidesteps timezone/format ambiguity, as in the sorter); `tags` are
-# the task's non-lane leaf tag names; the raw note is capped here and turned
-# into an excerpt on the Python side.
+# the task's non-lane leaf tag names and `tag_ids` the same tags' ids (only the
+# directly assigned tags — OmniFocus never reports a parent as assigned, so the
+# Python side adds ancestors); the raw note is capped here and turned into an
+# excerpt on the Python side.
 _CARD_OMNIJS = (
     "  const ms = d => d ? d.getTime() : null;"
     "  const statusName = t => {"
@@ -208,6 +256,7 @@ _CARD_OMNIJS = (
     "  };"
     "  const cardOf = (t, laneId) => {"
     "    const proj = t.containingProject;"
+    "    const own = (t.tags || []).filter(x => !laneIds[x.id.primaryKey]);"
     "    return {"
     "      id: t.id.primaryKey,"
     "      name: t.name,"
@@ -218,16 +267,19 @@ _CARD_OMNIJS = (
     "      added: ms(t.added),"
     "      flagged: !!t.flagged,"
     "      status: statusName(t),"
-    "      tags: (t.tags || []).filter(x => !laneIds[x.id.primaryKey]).map(x => x.name),"
+    "      tags: own.map(x => x.name),"
+    "      tag_ids: own.map(x => x.id.primaryKey),"
     "      note: String(t.note || '').slice(0, maxNoteChars)"
     "    };"
     "  };"
 )
 
-# Reads the Kanban parent's children (the lanes, in OmniFocus order) and every
-# open task in each lane, entirely in OmniJS (tags need the bridge). A task in
-# two lanes is emitted for the first lane only. argv[0] = JSON
-# {kanbanTag, maxNoteChars}; only those two config values reach the source.
+# Reads the Kanban parent's children (the lanes, in OmniFocus order), every
+# open task in each lane, and the rest of the tag tree — every tag outside the
+# Kanban subtree, in OmniFocus order with parents before children, dropped
+# tags skipped — entirely in OmniJS (tags need the bridge). A task in two lanes
+# is emitted for the first lane only. argv[0] = JSON {kanbanTag, maxNoteChars};
+# only those two config values reach the source.
 READ_BOARD_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
@@ -253,8 +305,19 @@ function run(argv) {
         "      cards.push(cardOf(t, l.id.primaryKey));" +
         "    });" +
         "  });" +
+        "  const tagTree = [];" +
+        "  const walkTags = (list, parentId) => {" +
+        "    (list || []).forEach(tg => {" +
+        "      if (tg.id.primaryKey === parent.id.primaryKey) return;" +
+        "      if (String(tg.status).indexOf('Dropped') !== -1) return;" +
+        "      tagTree.push({ id: tg.id.primaryKey, name: tg.name, parent_id: parentId });" +
+        "      walkTags(tg.children, tg.id.primaryKey);" +
+        "    });" +
+        "  };" +
+        "  walkTags(tags, null);" +
         "  return JSON.stringify({" +
         "    lanes: lanes.map(l => ({ id: l.id.primaryKey, name: l.name }))," +
+        "    tags: tagTree," +
         "    cards: cards" +
         "  });" +
         "})()";
@@ -364,7 +427,8 @@ class BoardApp:
             return 409, {"error": MISSING_TAG_MESSAGE.format(tag=self.kanban_tag)}
         if "error" in raw:
             return 400, {"error": str(raw["error"])}
-        return 200, {"card": finish_card(raw["card"], self.max_note_chars)}
+        return 200, {"card": finish_card(raw["card"], self.max_note_chars,
+                                         parent_of=self.state.parent_of)}
 
 
 # ------------------------------- HTTP server ------------------------------

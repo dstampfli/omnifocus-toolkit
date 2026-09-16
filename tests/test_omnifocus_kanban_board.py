@@ -18,6 +18,8 @@ from omnifocus_kanban_board import (
     BoardState,
     MoveError,
     build_board,
+    build_tags,
+    expand_tag_ids,
     finish_card,
     make_server,
     move_task,
@@ -45,6 +47,17 @@ def ids(cards):
 
 
 LANES = [{"id": "L1", "name": "Reviewed"}, {"id": "L2", "name": "To Do"}]
+
+# Tag tree in OmniFocus order (parents before children): Engagements > NG,
+# Engagements > NetApp, then top-level Work and Me.
+TAGS = [
+    {"id": "eng", "name": "Engagements", "parent_id": None},
+    {"id": "ng", "name": "NG", "parent_id": "eng"},
+    {"id": "netapp", "name": "NetApp", "parent_id": "eng"},
+    {"id": "work", "name": "Work", "parent_id": None},
+    {"id": "me", "name": "Me", "parent_id": None},
+]
+PARENT_OF = {t["id"]: t["parent_id"] for t in TAGS}
 
 
 # ------------------------------- sort_cards -------------------------------
@@ -147,8 +160,65 @@ def test_build_board_drops_cards_in_unknown_lanes():
 
 
 def test_build_board_result_is_json_serializable():
-    raw = {"lanes": LANES, "cards": [card("a", due=1, flagged=True, tags=["x"])]}
+    raw = {"lanes": LANES, "tags": TAGS,
+           "cards": [card("a", due=1, flagged=True, tags=["NG"], tag_ids=["ng"])]}
     json.dumps(build_board(raw))
+
+
+# ------------------------------- tags -------------------------------------
+
+def test_expand_tag_ids_adds_ancestors_once():
+    assert expand_tag_ids(["ng", "work"], PARENT_OF) == ["ng", "eng", "work"]
+
+
+def test_expand_tag_ids_dedupes_shared_ancestor():
+    assert expand_tag_ids(["ng", "netapp"], PARENT_OF) == ["ng", "eng", "netapp"]
+
+
+def test_expand_tag_ids_keeps_ids_missing_from_tree():
+    assert expand_tag_ids(["ghost"], PARENT_OF) == ["ghost"]
+    assert expand_tag_ids(["ng"], {}) == ["ng"]
+
+
+def test_finish_card_defaults_tag_ids_to_empty():
+    assert finish_card({"id": "a", "name": "T", "lane_id": "L1"})["tag_ids"] == []
+
+
+def test_finish_card_expands_tag_ids_with_parent_of():
+    out = finish_card(card("a", tags=["NG"], tag_ids=["ng"]), parent_of=PARENT_OF)
+    assert out["tag_ids"] == ["ng", "eng"]
+    assert out["tags"] == ["NG"]  # display names stay the leaf names
+
+
+def test_build_tags_keeps_order_depth_and_counts_descendants():
+    cards = [
+        finish_card(card("a", tag_ids=["ng"]), parent_of=PARENT_OF),
+        finish_card(card("b", tag_ids=["netapp", "work"]), parent_of=PARENT_OF),
+        finish_card(card("c"), parent_of=PARENT_OF),
+    ]
+    assert build_tags(TAGS, cards) == [
+        {"id": "eng", "name": "Engagements", "parent_id": None, "depth": 0, "count": 2},
+        {"id": "ng", "name": "NG", "parent_id": "eng", "depth": 1, "count": 1},
+        {"id": "netapp", "name": "NetApp", "parent_id": "eng", "depth": 1, "count": 1},
+        {"id": "work", "name": "Work", "parent_id": None, "depth": 0, "count": 1},
+        {"id": "me", "name": "Me", "parent_id": None, "depth": 0, "count": 0},
+    ]
+
+
+def test_build_board_emits_tag_tree_and_expands_card_tag_ids():
+    raw = {"lanes": LANES, "tags": TAGS,
+           "cards": [card("a", tag_ids=["ng"]),
+                     card("b", tag_ids=["work"], status="Completed")]}
+    board = build_board(raw)
+    assert board["cards"][0]["tag_ids"] == ["ng", "eng"]
+    counts = {t["id"]: t["count"] for t in board["tags"]}
+    assert counts == {"eng": 1, "ng": 1, "netapp": 0, "work": 0, "me": 0}
+
+
+def test_build_board_tolerates_missing_tag_tree():
+    board = build_board({"lanes": LANES, "cards": [card("a", tag_ids=["x"])]})
+    assert board["tags"] == []
+    assert board["cards"][0]["tag_ids"] == ["x"]
 
 
 # ------------------------------- validate_move ----------------------------
@@ -197,6 +267,13 @@ def test_board_state_remembers_ids_from_board():
     assert state.loaded
     assert state.task_ids == {"a", "b"}
     assert state.lane_ids == {"L1", "L2"}
+
+
+def test_board_state_remembers_tag_parents():
+    state = BoardState()
+    assert state.parent_of == {}
+    state.remember({"lanes": LANES, "cards": [], "tags": build_tags(TAGS, [])})
+    assert state.parent_of == PARENT_OF
 
 
 # ------------------------------- JXA programs -----------------------------
@@ -333,6 +410,16 @@ def test_post_move_happy_path_returns_finished_card():
     assert payload["card"]["lane_id"] == "L2"
     assert payload["card"]["note_excerpt"] == "moved note"
     assert "note" not in payload["card"]
+
+
+def test_post_move_expands_returned_card_tag_ids_from_last_read():
+    raw = dict(RAW, tags=TAGS)
+    app = make_app(read=lambda tag, n: json.loads(json.dumps(raw)),
+                   move=lambda tag, t, l, n: {"card": card(t, lane=l, tag_ids=["ng"])})
+    app.get_board()
+    status, payload = app.post_move({"task_id": "a", "lane_id": "L2"}, True)
+    assert status == 200
+    assert payload["card"]["tag_ids"] == ["ng", "eng"]
 
 
 def test_post_move_maps_omnijs_error_to_400_and_jxa_error_to_500():

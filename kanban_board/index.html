@@ -89,6 +89,65 @@
   button { cursor: pointer; }
   button:hover { border-color: var(--rail); }
 
+  /* Checkbox dropdowns for the Project and Tag filters. The panel lives inside
+     the .filter container, which render() never replaces, so an open panel
+     survives the 30-second refresh; only its rows are rebuilt. */
+  .filter { position: relative; }
+  .filter-button { display: flex; align-items: center; gap: 6px; max-width: 280px; }
+  .filter-button .filter-name { color: var(--ink-2); }
+  .filter-button .filter-value {
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .filter-button .filter-caret { color: var(--ink-3); font-size: 11px; }
+  .filter.open .filter-button { border-color: var(--rail); }
+  .filter-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    min-width: 250px;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--card);
+    border: 1px solid var(--card-edge);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    padding: 0 0 6px;
+  }
+  .filter-head {
+    position: sticky;
+    top: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px 6px;
+    font-size: 12px;
+    color: var(--ink-3);
+    background: var(--card);
+    border-bottom: 1px solid var(--lane-edge);
+  }
+  .filter-clear { border: 0; background: none; padding: 0; color: var(--rail); font-size: 12px; }
+  .filter-clear:hover { text-decoration: underline; }
+  .filter-clear:disabled { color: var(--ink-3); cursor: default; text-decoration: none; }
+  .filter-list { list-style: none; margin: 0; padding: 4px 0 0; }
+  .filter-list label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px 5px calc(12px + var(--depth, 0) * 16px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .filter-list label:hover { background: var(--drop); }
+  .filter-list input { accent-color: var(--rail); margin: 0; }
+  .filter-list .name { flex: 1; }
+  .filter-list .count { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .filter-list .muted .name { color: var(--ink-3); }
+
   #banner {
     margin: 0 28px;
     padding: 10px 14px;
@@ -209,12 +268,34 @@
 <header>
   <h1 id="title">Kanban</h1>
   <div class="controls">
-    <label>Project
-      <select id="project"><option value="all">All</option></select>
-    </label>
-    <label>Tag
-      <select id="tag"><option value="all">All</option></select>
-    </label>
+    <div class="filter" id="project-filter">
+      <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false">
+        <span class="filter-name">Project</span>
+        <span class="filter-value">All</span>
+        <span class="filter-caret">&#9662;</span>
+      </button>
+      <div class="filter-panel" hidden>
+        <div class="filter-head">
+          <span class="filter-summary"></span>
+          <button type="button" class="filter-clear">Clear</button>
+        </div>
+        <ul class="filter-list"></ul>
+      </div>
+    </div>
+    <div class="filter" id="tag-filter">
+      <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false">
+        <span class="filter-name">Tag</span>
+        <span class="filter-value">All</span>
+        <span class="filter-caret">&#9662;</span>
+      </button>
+      <div class="filter-panel" hidden>
+        <div class="filter-head">
+          <span class="filter-summary"></span>
+          <button type="button" class="filter-clear">Clear</button>
+        </div>
+        <ul class="filter-list"></ul>
+      </div>
+    </div>
     <label>Sort
       <select id="sort">
         <option value="due">Due date</option>
@@ -234,12 +315,14 @@
 <script>
 (() => {
   const $ = (sel) => document.querySelector(sel);
-  const INBOX = " inbox"; // project-filter value for cards with no project
-  const UNTAGGED = " untagged"; // tag-filter value for cards with no (non-lane) tags
+  const INBOX = " inbox"; // project-filter id for cards with no project
+  const UNTAGGED = " untagged"; // tag-filter id for cards with no (non-lane) tags
+  // Filters hold the selected ids; an empty set means "show everything".
+  // Within a filter the picks are ORed, across the two filters ANDed.
   const state = {
     board: null,
-    project: "all",
-    tag: "all",
+    projects: new Set(),
+    tags: new Set(),
     sort: "due",
     dragging: false,
     inflight: 0,
@@ -322,58 +405,123 @@
   // ------------------------------ rendering ------------------------------
 
   function matchesProject(card) {
-    if (state.project === "all") return true;
-    if (state.project === INBOX) return !card.project;
-    return !!card.project && card.project.id === state.project;
+    if (state.projects.size === 0) return true;
+    if (!card.project) return state.projects.has(INBOX);
+    return state.projects.has(card.project.id);
   }
 
+  // tag_ids already include ancestors (the server expands them), so picking a
+  // parent tag matches every card tagged with any of its descendants.
   function matchesTag(card) {
-    if (state.tag === "all") return true;
-    const tags = card.tags || [];
-    if (state.tag === UNTAGGED) return tags.length === 0;
-    return tags.includes(state.tag);
+    if (state.tags.size === 0) return true;
+    const ids = card.tag_ids || [];
+    if (ids.length === 0) return state.tags.has(UNTAGGED);
+    return ids.some((id) => state.tags.has(id));
   }
 
   const matchesFilter = (card) => matchesProject(card) && matchesTag(card);
 
-  // Rebuilds a filter <select> as "All" plus the given [value, label] entries.
-  // Returns `current`, or "all" if that value is no longer on offer.
-  function fillFilter(select, entries, current) {
-    const known = new Set(entries.map((e) => e[0]));
-    const value = current !== "all" && !known.has(current) ? "all" : current;
-    select.textContent = "";
-    const all = document.createElement("option");
-    all.value = "all";
-    all.textContent = "All";
-    select.appendChild(all);
-    for (const [id, name] of entries) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = name;
-      select.appendChild(opt);
+  // Rebuilds one checkbox dropdown from entries {id, name, count, depth}.
+  // Drops selected ids no longer on offer, restores focus to the row that had
+  // it (a change re-renders the rows), and returns the pruned selection.
+  function fillFilter(root, entries, selected, noun) {
+    const known = new Set(entries.map((e) => e.id));
+    const picked = new Set([...selected].filter((id) => known.has(id)));
+    // Only a checkbox row carries data-id; focus on the panel's own button or
+    // Clear link has nothing to restore.
+    const active = document.activeElement;
+    const focusedId = root.contains(active) && typeof active.dataset.id === "string"
+      ? active.dataset.id : null;
+
+    const list = root.querySelector(".filter-list");
+    list.textContent = "";
+    for (const e of entries) {
+      const li = document.createElement("li");
+      const label = document.createElement("label");
+      if (e.depth) label.style.setProperty("--depth", e.depth);
+      if (!e.count) label.className = "muted";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.id = e.id;
+      box.checked = picked.has(e.id);
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = e.name;
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = e.count;
+      label.append(box, name, count);
+      li.appendChild(label);
+      list.appendChild(li);
     }
-    select.value = value;
-    return value;
+    if (focusedId !== null) {
+      const again = [...list.querySelectorAll("input")].find((i) => i.dataset.id === focusedId);
+      if (again) again.focus();
+    }
+
+    const names = entries.filter((e) => picked.has(e.id)).map((e) => e.name);
+    root.querySelector(".filter-value").textContent =
+      names.length === 0 ? "All" :
+      names.length <= 2 ? names.join(", ") :
+      names.length + " " + noun;
+    root.querySelector(".filter-summary").textContent =
+      names.length === 0 ? "Showing all" : names.length + " selected";
+    root.querySelector(".filter-clear").disabled = names.length === 0;
+    return picked;
   }
 
   function renderFilters() {
+    const b = state.board;
     const projects = new Map();
-    const tags = new Set();
-    let hasInbox = false;
-    let hasUntagged = false;
-    for (const c of state.board.cards) {
-      if (c.project) projects.set(c.project.id, c.project.name);
-      else hasInbox = true;
-      if (c.tags && c.tags.length) c.tags.forEach((t) => tags.add(t));
-      else hasUntagged = true;
+    let inbox = 0;
+    let untagged = 0;
+    for (const c of b.cards) {
+      if (c.project) {
+        const cur = projects.get(c.project.id) || { id: c.project.id, name: c.project.name, count: 0 };
+        cur.count += 1;
+        projects.set(c.project.id, cur);
+      } else inbox += 1;
+      if (!c.tag_ids || c.tag_ids.length === 0) untagged += 1;
     }
-    const byLabel = (a, b) => cmp(a[1].toLowerCase(), b[1].toLowerCase());
-    const projectEntries = [...projects.entries()].sort(byLabel);
-    if (hasInbox) projectEntries.push([INBOX, "Inbox"]);
-    const tagEntries = [...tags].map((t) => [t, t]).sort(byLabel);
-    if (hasUntagged) tagEntries.push([UNTAGGED, "Untagged"]);
-    state.project = fillFilter($("#project"), projectEntries, state.project);
-    state.tag = fillFilter($("#tag"), tagEntries, state.tag);
+    // Projects: those with a card on the board, A-Z, plus Inbox when needed.
+    const projectEntries = [...projects.values()]
+      .sort((x, y) => cmp(x.name.toLowerCase(), y.name.toLowerCase()));
+    if (inbox) projectEntries.push({ id: INBOX, name: "Inbox", count: inbox });
+    // Tags: the whole OmniFocus tree (minus the Kanban lanes) in OmniFocus
+    // order, indented by depth; zero-count tags stay listed but muted.
+    const tagEntries = (b.tags || []).map((t) => ({ id: t.id, name: t.name, count: t.count, depth: t.depth }));
+    tagEntries.push({ id: UNTAGGED, name: "Untagged", count: untagged });
+    state.projects = fillFilter($("#project-filter"), projectEntries, state.projects, "projects");
+    state.tags = fillFilter($("#tag-filter"), tagEntries, state.tags, "tags");
+  }
+
+  function setFilterOpen(root, open) {
+    root.classList.toggle("open", open);
+    root.querySelector(".filter-panel").hidden = !open;
+    root.querySelector(".filter-button").setAttribute("aria-expanded", String(open));
+  }
+  function closeFilters(except) {
+    document.querySelectorAll(".filter.open").forEach((f) => { if (f !== except) setFilterOpen(f, false); });
+  }
+
+  // Wires one dropdown: the button toggles it, a checkbox updates the given
+  // selection set, Clear empties it. Panels close on outside click or Escape.
+  function setupFilter(root, selected) {
+    root.querySelector(".filter-button").addEventListener("click", () => {
+      const open = !root.classList.contains("open");
+      closeFilters(root);
+      setFilterOpen(root, open);
+    });
+    root.querySelector(".filter-list").addEventListener("change", (ev) => {
+      const box = ev.target;
+      if (!(box instanceof HTMLInputElement)) return;
+      if (box.checked) selected().add(box.dataset.id); else selected().delete(box.dataset.id);
+      render();
+    });
+    root.querySelector(".filter-clear").addEventListener("click", () => {
+      selected().clear();
+      render();
+    });
   }
 
   function formatDue(card) {
@@ -515,8 +663,12 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, 5000);
   }
 
-  $("#project").addEventListener("change", (ev) => { state.project = ev.target.value; render(); });
-  $("#tag").addEventListener("change", (ev) => { state.tag = ev.target.value; render(); });
+  setupFilter($("#project-filter"), () => state.projects);
+  setupFilter($("#tag-filter"), () => state.tags);
+  document.addEventListener("click", (ev) => {
+    if (!(ev.target instanceof Element) || !ev.target.closest(".filter")) closeFilters();
+  });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeFilters(); });
   $("#sort").addEventListener("change", (ev) => { state.sort = ev.target.value; render(); });
   $("#refresh").addEventListener("click", load);
   setInterval(() => { if (!state.dragging && state.inflight === 0) load(); }, 30000);
