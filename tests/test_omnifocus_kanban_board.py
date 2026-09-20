@@ -10,6 +10,7 @@ import omnifocus_kanban_board as board_mod
 from omnifocus_common import JxaError
 from omnifocus_kanban_board import (
     DEFAULT_LANE_ORDER,
+    FLAG_TASK_JXA,
     MISSING_TAG_MESSAGE,
     PAGE_PATH,
     MOVE_TASK_JXA,
@@ -22,6 +23,7 @@ from omnifocus_kanban_board import (
     build_tags,
     expand_tag_ids,
     finish_card,
+    flag_task,
     make_server,
     move_task,
     order_lanes,
@@ -30,6 +32,7 @@ from omnifocus_kanban_board import (
     read_board,
     serve,
     sort_cards,
+    validate_flag,
     validate_move,
 )
 
@@ -309,6 +312,36 @@ def test_validate_move_requires_a_prior_read():
         validate_move({"task_id": "t1", "lane_id": "L1"}, set(), set(), loaded=False)
 
 
+def test_validate_flag_accepts_known_task_and_bool():
+    assert validate_flag({"task_id": "t1", "flagged": True}, TASKS) == ("t1", True)
+    assert validate_flag({"task_id": "t2", "flagged": False}, TASKS) == ("t2", False)
+
+
+@pytest.mark.parametrize("body", [None, [], "x", {"task_id": "t1"}, {"flagged": True},
+                                  {"task_id": 1, "flagged": True},
+                                  {"task_id": "t1", "flagged": "yes"},
+                                  {"task_id": "t1", "flagged": 1}])
+def test_validate_flag_rejects_malformed_body(body):
+    with pytest.raises(MoveError):
+        validate_flag(body, TASKS)
+
+
+@pytest.mark.parametrize("bad", ["", "has space", "quote'x", "a" * 65, "semi;colon"])
+def test_validate_flag_rejects_malformed_ids(bad):
+    with pytest.raises(MoveError):
+        validate_flag({"task_id": bad, "flagged": True}, TASKS | {bad})
+
+
+def test_validate_flag_rejects_unknown_task():
+    with pytest.raises(MoveError, match="task"):
+        validate_flag({"task_id": "nope", "flagged": True}, TASKS)
+
+
+def test_validate_flag_requires_a_prior_read():
+    with pytest.raises(MoveError, match="load the board"):
+        validate_flag({"task_id": "t1", "flagged": True}, set(), loaded=False)
+
+
 # ------------------------------- BoardState -------------------------------
 
 def test_board_state_remembers_ids_from_board():
@@ -348,9 +381,19 @@ def test_move_jxa_interpolates_only_ids_and_config():
     assert "task.addTag(lane)" in MOVE_TASK_JXA
 
 
+def test_flag_jxa_interpolates_only_id_flag_and_config():
+    assert _cfg_fields(FLAG_TASK_JXA) == {"kanbanTag", "maxNoteChars", "taskId", "flagged"}
+    assert "JSON.stringify(cfg.taskId)" in FLAG_TASK_JXA
+    assert "JSON.stringify(cfg.flagged)" in FLAG_TASK_JXA
+    assert "task.flagged = flagged" in FLAG_TASK_JXA
+    # Flagging never re-tags.
+    assert "removeTags" not in FLAG_TASK_JXA and "addTag" not in FLAG_TASK_JXA
+
+
 def test_jxa_sources_share_the_card_serializer():
-    assert "cardOf" in READ_BOARD_JXA and "cardOf" in MOVE_TASK_JXA
-    assert "__CARD__" not in READ_BOARD_JXA and "__CARD__" not in MOVE_TASK_JXA
+    for source in (READ_BOARD_JXA, MOVE_TASK_JXA, FLAG_TASK_JXA):
+        assert "cardOf" in source
+        assert "__CARD__" not in source
 
 
 def test_read_board_passes_json_config(monkeypatch):
@@ -374,12 +417,23 @@ def test_move_task_passes_json_config(monkeypatch):
                                    "taskId": "t1", "laneId": "L1"}
 
 
+def test_flag_task_passes_json_config(monkeypatch):
+    calls = []
+    monkeypatch.setattr(board_mod, "run_jxa_or_raise",
+                        lambda script, *args: calls.append((script, args)) or {"card": {}})
+    assert flag_task("Kanban", "t1", True, 50) == {"card": {}}
+    script, args = calls[0]
+    assert script is FLAG_TASK_JXA
+    assert json.loads(args[0]) == {"kanbanTag": "Kanban", "maxNoteChars": 50,
+                                   "taskId": "t1", "flagged": True}
+
+
 # --------------------------------- BoardApp -------------------------------
 
 RAW = {"lanes": LANES, "cards": [card("a", due=None, note="n"), card("b", due=5, lane="L2")]}
 
 
-def make_app(read=None, move=None, tmp_path=None, **kw):
+def make_app(read=None, move=None, flag=None, tmp_path=None, **kw):
     page = (tmp_path / "index.html") if tmp_path else None
     if page:
         page.write_text("<title>x</title>")
@@ -388,6 +442,7 @@ def make_app(read=None, move=None, tmp_path=None, **kw):
         page_path=page,
         read=read or (lambda tag, n: json.loads(json.dumps(RAW))),
         move=move or (lambda tag, t, l, n: {"card": card(t, lane=l)}),
+        flag=flag or (lambda tag, t, f, n: {"card": card(t, flagged=f)}),
         max_note_chars=100,
         now=lambda: datetime(2026, 9, 12, 10, 30, 5, tzinfo=timezone.utc),
         **kw,
@@ -494,6 +549,70 @@ def test_post_move_maps_omnijs_error_to_400_and_jxa_error_to_500():
     assert status == 500 and "nope" in payload["error"]
 
 
+def test_post_flag_requires_header():
+    app = make_app()
+    app.get_board()
+    status, payload = app.post_flag({"task_id": "a", "flagged": True}, has_header=False)
+    assert status == 400 and "X-Kanban" in payload["error"]
+
+
+def test_post_flag_rejects_before_any_read():
+    status, payload = make_app().post_flag({"task_id": "a", "flagged": True}, True)
+    assert status == 400 and "load the board" in payload["error"]
+
+
+def test_post_flag_rejects_unknown_ids_without_calling_omnifocus():
+    calls = []
+    app = make_app(flag=lambda *a: calls.append(a))
+    app.get_board()
+    status, _ = app.post_flag({"task_id": "zzz", "flagged": True}, True)
+    assert status == 400 and calls == []
+
+
+def test_post_flag_happy_path_returns_finished_card():
+    calls = []
+
+    def flag(tag, t, f, n):
+        calls.append((tag, t, f, n))
+        return {"card": card(t, flagged=f, note="flagged note")}
+    app = make_app(flag=flag)
+    app.get_board()
+    status, payload = app.post_flag({"task_id": "a", "flagged": True}, True)
+    assert status == 200
+    assert calls == [("Kanban", "a", True, 100)]
+    assert payload["card"]["flagged"] is True
+    assert payload["card"]["note_excerpt"] == "flagged note"
+    assert "note" not in payload["card"]
+    status, payload = app.post_flag({"task_id": "a", "flagged": False}, True)
+    assert status == 200 and payload["card"]["flagged"] is False
+
+
+def test_post_flag_expands_returned_card_tag_ids_from_last_read():
+    raw = dict(RAW, tags=TAGS)
+    app = make_app(read=lambda tag, n: json.loads(json.dumps(raw)),
+                   flag=lambda tag, t, f, n: {"card": card(t, flagged=f, tag_ids=["ng"])})
+    app.get_board()
+    status, payload = app.post_flag({"task_id": "a", "flagged": True}, True)
+    assert status == 200
+    assert payload["card"]["tag_ids"] == ["ng", "eng"]
+
+
+def test_post_flag_maps_omnijs_error_to_400_and_jxa_error_to_500():
+    app = make_app(flag=lambda *a: {"error": "task no longer exists"})
+    app.get_board()
+    assert app.post_flag({"task_id": "a", "flagged": True}, True)[0] == 400
+    app = make_app(flag=lambda *a: {"error": "missing_kanban_tag"})
+    app.get_board()
+    assert app.post_flag({"task_id": "a", "flagged": True}, True)[0] == 409
+
+    def boom(*a):
+        raise JxaError("osascript failed:\nnope")
+    app = make_app(flag=boom)
+    app.get_board()
+    status, payload = app.post_flag({"task_id": "a", "flagged": True}, True)
+    assert status == 500 and "nope" in payload["error"]
+
+
 def test_page_reads_file(tmp_path):
     app = make_app(tmp_path=tmp_path)
     assert app.page() == b"<title>x</title>"
@@ -559,6 +678,18 @@ def test_post_move_over_http(server):
     assert json.loads(data)["card"]["lane_id"] == "L2"
 
 
+def test_post_flag_over_http(server):
+    request(server, "GET", "/api/board")
+    body = json.dumps({"task_id": "a", "flagged": True})
+    resp, data = request(server, "POST", "/api/flag", body,
+                         {"Content-Type": "application/json"})
+    assert resp.status == 400 and "X-Kanban" in json.loads(data)["error"]
+    resp, data = request(server, "POST", "/api/flag", body,
+                         {"Content-Type": "application/json", "X-Kanban": "1"})
+    assert resp.status == 200
+    assert json.loads(data)["card"]["flagged"] is True
+
+
 def test_post_move_with_invalid_json_is_400(server):
     request(server, "GET", "/api/board")
     resp, data = request(server, "POST", "/api/move", "{not json",
@@ -596,7 +727,7 @@ def test_serve_reports_port_in_use(tmp_path, capsys):
 def test_real_page_exists_and_loads_nothing_external():
     html = PAGE_PATH.read_text(encoding="utf-8")
     assert "<title>" in html
-    assert "/api/board" in html and "/api/move" in html
+    assert "/api/board" in html and "/api/move" in html and "/api/flag" in html
     assert '"X-Kanban"' in html
     # The only <link> allowed is the inline data: favicon -- nothing fetched.
     links = re.findall(r"<link\b[^>]*>", html)

@@ -7,8 +7,12 @@ Kanban plug-in's Display Board action). Reviewed tasks are not on the board. Dro
 re-tags the task exactly like the plug-in does: remove every Kanban lane tag,
 add the target lane.
 
-Unlike the other tools there is no --apply: each drop is the user's explicit
-action and writes immediately. Makes no Claude API calls.
+Each card also carries a flag toggle that sets the task's `flagged` state, so
+a card can be pushed into OmniFocus's Forecast perspective (with its "Show
+Flagged" setting on) without leaving the board.
+
+Unlike the other tools there is no --apply: each drop or flag click is the
+user's explicit action and writes immediately. Makes no Claude API calls.
 """
 
 import argparse
@@ -215,7 +219,21 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class MoveError(ValueError):
-    """A move request that must be refused before any osascript call."""
+    """A write request (move or flag) that must be refused before any
+    osascript call."""
+
+
+def _require_ids(body, fields):
+    """Pull well-formed OmniFocus identifiers out of a request body."""
+    if not isinstance(body, dict):
+        raise MoveError("request body must be a JSON object")
+    found = {}
+    for field in fields:
+        value = body.get(field)
+        if not isinstance(value, str) or not _ID_RE.match(value):
+            raise MoveError(f"{field} must be an OmniFocus identifier")
+        found[field] = value
+    return found
 
 
 def validate_move(body, task_ids, lane_ids, loaded=True):
@@ -225,14 +243,7 @@ def validate_move(body, task_ids, lane_ids, loaded=True):
     most recent successful board read — the same whitelisting rule the other
     tools' write paths use, so only identifiers OmniFocus itself handed us are
     ever embedded in the write source."""
-    if not isinstance(body, dict):
-        raise MoveError("request body must be a JSON object")
-    found = {}
-    for field in ("task_id", "lane_id"):
-        value = body.get(field)
-        if not isinstance(value, str) or not _ID_RE.match(value):
-            raise MoveError(f"{field} must be an OmniFocus identifier")
-        found[field] = value
+    found = _require_ids(body, ("task_id", "lane_id"))
     if not loaded:
         raise MoveError("load the board before moving a task")
     if found["task_id"] not in task_ids:
@@ -240,6 +251,23 @@ def validate_move(body, task_ids, lane_ids, loaded=True):
     if found["lane_id"] not in lane_ids:
         raise MoveError("unknown lane; refresh the board")
     return found["task_id"], found["lane_id"]
+
+
+def validate_flag(body, task_ids, loaded=True):
+    """Return (task_id, flagged) from a /api/flag body, or raise MoveError.
+
+    Same whitelisting as validate_move for the task id; `flagged` must be a
+    real JSON boolean (not a truthy string or number) since it is embedded in
+    the write source verbatim."""
+    found = _require_ids(body, ("task_id",))
+    flagged = body.get("flagged")
+    if not isinstance(flagged, bool):
+        raise MoveError("flagged must be true or false")
+    if not loaded:
+        raise MoveError("load the board before flagging a task")
+    if found["task_id"] not in task_ids:
+        raise MoveError("unknown task; refresh the board")
+    return found["task_id"], flagged
 
 
 class BoardState:
@@ -385,6 +413,39 @@ function run(argv) {
 """.replace("__CARD__", json.dumps(_CARD_OMNIJS))
 
 
+# Sets one task's flag and returns its fresh card. The task's lane is
+# whichever Kanban child it carries (first in OmniFocus order) — the same lane
+# the board read reports. argv[0] = JSON {kanbanTag, maxNoteChars, taskId,
+# flagged}; the id was validated (well-formed + seen in the last read) and
+# `flagged` checked to be a boolean before this runs.
+FLAG_TASK_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const omni =
+        "(() => {" +
+        "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
+        "  const maxNoteChars = " + JSON.stringify(cfg.maxNoteChars) + ";" +
+        "  const taskId = " + JSON.stringify(cfg.taskId) + ";" +
+        "  const flagged = " + JSON.stringify(cfg.flagged) + ";" +
+        "  const parent = flattenedTags.byName(kanbanName);" +
+        "  if (!parent) return JSON.stringify({ error: 'missing_kanban_tag' });" +
+        "  const lanes = parent.children || [];" +
+        "  const laneIds = {};" +
+        "  lanes.forEach(l => { laneIds[l.id.primaryKey] = true; });" +
+        "  const task = Task.byIdentifier(taskId);" +
+        "  if (!task) return JSON.stringify({ error: 'task no longer exists' });" +
+        "  const lane = lanes.find(l => (task.tags || []).some(x => x.id.primaryKey === l.id.primaryKey));" +
+        "  if (!lane) return JSON.stringify({ error: 'task is no longer on the board' });" +
+        __CARD__ +
+        "  task.flagged = flagged;" +
+        "  return JSON.stringify({ card: cardOf(task, lane.id.primaryKey) });" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+""".replace("__CARD__", json.dumps(_CARD_OMNIJS))
+
+
 def read_board(kanban_tag, max_note_chars=MAX_NOTE_CHARS):
     cfg = json.dumps({"kanbanTag": kanban_tag, "maxNoteChars": max_note_chars})
     return run_jxa_or_raise(READ_BOARD_JXA, cfg)
@@ -396,6 +457,12 @@ def move_task(kanban_tag, task_id, lane_id, max_note_chars=MAX_NOTE_CHARS):
     return run_jxa_or_raise(MOVE_TASK_JXA, cfg)
 
 
+def flag_task(kanban_tag, task_id, flagged, max_note_chars=MAX_NOTE_CHARS):
+    cfg = json.dumps({"kanbanTag": kanban_tag, "maxNoteChars": max_note_chars,
+                      "taskId": task_id, "flagged": flagged})
+    return run_jxa_or_raise(FLAG_TASK_JXA, cfg)
+
+
 # --------------------------------- BoardApp -------------------------------
 
 MISSING_TAG_MESSAGE = ("No tag named {tag!r}. Run the Kanban plug-in's "
@@ -404,15 +471,17 @@ MISSING_TAG_MESSAGE = ("No tag named {tag!r}. Run the Kanban plug-in's "
 
 class BoardApp:
     """The board's endpoint logic, independent of HTTP: each method returns
-    (status, payload). `read`/`move` are injectable for tests."""
+    (status, payload). `read`/`move`/`flag` are injectable for tests."""
 
     def __init__(self, kanban_tag=KANBAN_TAG, *, page_path=PAGE_PATH,
-                 read=read_board, move=move_task, max_note_chars=MAX_NOTE_CHARS,
-                 lane_order=KANBAN_LANE_ORDER, now=None):
+                 read=read_board, move=move_task, flag=flag_task,
+                 max_note_chars=MAX_NOTE_CHARS, lane_order=KANBAN_LANE_ORDER,
+                 now=None):
         self.kanban_tag = kanban_tag
         self.page_path = page_path
         self.read = read
         self.move = move
+        self.flag = flag
         self.max_note_chars = max_note_chars
         self.lane_order = lane_order
         self.now = now or (lambda: datetime.now(timezone.utc))
@@ -446,9 +515,25 @@ class BoardApp:
                 body, self.state.task_ids, self.state.lane_ids, self.state.loaded)
         except MoveError as e:
             return 400, {"error": str(e)}
+        return self._write_card(
+            lambda: self.move(self.kanban_tag, task_id, lane_id, self.max_note_chars))
+
+    def post_flag(self, body, has_header):
+        if not has_header:
+            return 400, {"error": "missing X-Kanban header"}
+        try:
+            task_id, flagged = validate_flag(body, self.state.task_ids, self.state.loaded)
+        except MoveError as e:
+            return 400, {"error": str(e)}
+        return self._write_card(
+            lambda: self.flag(self.kanban_tag, task_id, flagged, self.max_note_chars))
+
+    def _write_card(self, write):
+        """Run one validated OmniFocus write under the lock and turn its
+        {card}/{error} result into (status, payload)."""
         with self.state.lock:
             try:
-                raw = self.move(self.kanban_tag, task_id, lane_id, self.max_note_chars)
+                raw = write()
             except JxaError as e:
                 return 500, {"error": str(e)}
         if raw.get("error") == "missing_kanban_tag":
@@ -483,9 +568,12 @@ class KanbanHandler(BaseHTTPRequestHandler):
         else:
             self._send(404, {"error": "not found"})
 
+    _POST_ROUTES = {"/api/move": "post_move", "/api/flag": "post_flag"}
+
     def do_POST(self):
         app = self.server.app
-        if self.path.split("?", 1)[0] != "/api/move":
+        handler = self._POST_ROUTES.get(self.path.split("?", 1)[0])
+        if handler is None:
             self._send(404, {"error": "not found"})
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -494,7 +582,7 @@ class KanbanHandler(BaseHTTPRequestHandler):
         except ValueError:
             body = None
         has_header = self.headers.get("X-Kanban") is not None
-        self._send(*app.post_move(body, has_header))
+        self._send(*getattr(app, handler)(body, has_header))
 
     def log_message(self, fmt, *args):
         # One stderr line per request (including the 30 s auto-refresh) is

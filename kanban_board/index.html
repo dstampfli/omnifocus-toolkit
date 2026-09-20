@@ -256,8 +256,22 @@
   }
   .due.overdue { color: var(--overdue); font-weight: 500; }
   .due.soon { color: var(--soon); font-weight: 500; }
-  .flag { color: var(--flag); }
   .tags { color: var(--ink-3); }
+  .flag-btn {
+    margin-left: auto;
+    padding: 0 2px;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    color: var(--ink-3);
+    opacity: 0.45;
+    cursor: pointer;
+  }
+  .flag-btn:hover, .flag-btn:focus-visible { opacity: 1; color: var(--flag); }
+  .flag-btn.on { opacity: 1; color: var(--flag); }
+  .flag-btn:disabled { cursor: default; }
 
   #toast {
     position: fixed;
@@ -396,6 +410,29 @@
     } catch (err) {
       card.lane_id = fromLane;
       toast("Couldn't move “" + card.name + "”: " + err.message);
+    } finally {
+      state.inflight -= 1;
+      render();
+    }
+  }
+
+  async function flagCard(card, flagged) {
+    const was = card.flagged;
+    card.flagged = flagged;         // optimistic
+    state.inflight += 1;
+    render();
+    try {
+      const resp = await fetch("/api/flag", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Kanban": "1" },
+        body: JSON.stringify({ task_id: card.id, flagged: flagged }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || ("server returned " + resp.status));
+      Object.assign(card, data.card);
+    } catch (err) {
+      card.flagged = was;
+      toast("Couldn't " + (flagged ? "flag" : "unflag") + " “" + card.name + "”: " + err.message);
     } finally {
       state.inflight -= 1;
       render();
@@ -702,18 +739,26 @@
       due.textContent = formatDue(card);
       meta.appendChild(due);
     }
-    if (card.flagged) {
-      const flag = document.createElement("span");
-      flag.className = "flag";
-      flag.textContent = "Flagged";
-      meta.appendChild(flag);
-    }
     if (card.tags && card.tags.length) {
       const tags = document.createElement("span");
       tags.className = "tags";
       tags.textContent = card.tags.join(", ");
       meta.appendChild(tags);
     }
+    const flag = document.createElement("button");
+    flag.type = "button";
+    flag.className = "flag-btn" + (card.flagged ? " on" : "");
+    flag.textContent = card.flagged ? "\u2691" : "\u2690"; // ⚑ / ⚐
+    flag.title = card.flagged ? "Unflag (removes from Forecast)" : "Flag (shows in Forecast)";
+    flag.setAttribute("aria-label", (card.flagged ? "Unflag " : "Flag ") + card.name);
+    flag.setAttribute("aria-pressed", card.flagged ? "true" : "false");
+    flag.draggable = false;
+    flag.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      flagCard(card, !card.flagged);
+    });
+    meta.appendChild(flag);
     el.appendChild(meta);
 
     el.addEventListener("dragstart", (ev) => {
