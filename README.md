@@ -168,9 +168,9 @@ Behavior worth knowing:
 A local drag-and-drop board over the same `Kanban` tag lanes the [Kanban plug-in](omnifocus_kanban_plugin/README.md) uses (`To Do → In Progress → Waiting → Done`). Each column is one lane tag; every open task carrying a lane tag appears as a card, across all projects. Reviewed tasks are **not** on the board — pull one onto it by tagging it `Kanban ▸ To Do`. Dropping a card on another column re-tags the task exactly like the plug-in's actions do (remove every lane tag, add the target), so the board, the plug-in, and the task reviewer stay in agreement.
 
 ```bash
-python3 omnifocus_kanban_board.py              # serve http://127.0.0.1:8765/ and open it
-python3 omnifocus_kanban_board.py --port 9000  # another port
-python3 omnifocus_kanban_board.py --no-open    # don't open the browser
+uv run python omnifocus_kanban_board.py              # serve http://127.0.0.1:8765/ and open it
+uv run python omnifocus_kanban_board.py --port 9000  # another port
+uv run python omnifocus_kanban_board.py --no-open    # don't open the browser
 ```
 
 - Filter by project and/or tag (the tag list is built from the cards' non-lane tags; `Untagged` matches cards with none), sort within columns by due date (default), title, project, or added; click a title to open the task in OmniFocus. The board refreshes every 30 s (paused while you drag).

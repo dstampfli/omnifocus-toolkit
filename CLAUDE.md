@@ -21,33 +21,33 @@ Three OmniFocus automation utilities, a local MCP server that exposes them to Cl
 ## Commands
 
 ```bash
-python3 omnifocus_inbox_triage.py            # dry-run: classify Inbox tasks and report, change nothing
-python3 omnifocus_inbox_triage.py --apply    # classify, then move high-confidence matches into their project
+uv run python omnifocus_inbox_triage.py            # dry-run: classify Inbox tasks and report, change nothing
+uv run python omnifocus_inbox_triage.py --apply    # classify, then move high-confidence matches into their project
 
-uv sync                                      # install the anthropic/pydantic dependencies
-uv run pytest                                # run the unit tests
+uv sync                                            # install the anthropic/pydantic dependencies
+uv run pytest                                      # run the unit tests
 ```
 
 `omnifocus_inbox_triage.py` follows a dry-run-by-default / `--apply`-to-write safety model: dry-run is the implicit default and `--apply` opts into writing.
 
 ```bash
-python3 omnifocus_task_reviewer.py "Training"          # dry-run: show proposed enrichments
-python3 omnifocus_task_reviewer.py "Training" "Tech"   # multiple projects
-python3 omnifocus_task_reviewer.py "Training" --apply  # write: rename, append summary, tag reviewed
+uv run python omnifocus_task_reviewer.py "Training"          # dry-run: show proposed enrichments
+uv run python omnifocus_task_reviewer.py "Training" "Tech"   # multiple projects
+uv run python omnifocus_task_reviewer.py "Training" --apply  # write: rename, append summary, tag reviewed
 ```
 
 `omnifocus_task_reviewer.py` follows the same dry-run-by-default / `--apply`-to-write model as the triage tool.
 
 ```bash
-python3 omnifocus_sorter.py "Training" --by due                  # dry-run: show the new order
-python3 omnifocus_sorter.py "Training" "Tech" --by title         # multiple projects
-python3 omnifocus_sorter.py "Training" --by added --desc --apply # write: newest first
+uv run python omnifocus_sorter.py "Training" --by due                  # dry-run: show the new order
+uv run python omnifocus_sorter.py "Training" "Tech" --by title         # multiple projects
+uv run python omnifocus_sorter.py "Training" --by added --desc --apply # write: newest first
 ```
 
 `omnifocus_sorter.py` follows the same dry-run-by-default / `--apply`-to-write model.
 
 ```bash
-python3 omnifocus_kanban_board.py [--port 8765] [--no-open]   # serve the Kanban board and open it
+uv run python omnifocus_kanban_board.py [--port 8765] [--no-open]   # serve the Kanban board and open it
 ```
 
 `omnifocus_kanban_board.py` has **no** dry-run mode: each drop on the board writes immediately.
