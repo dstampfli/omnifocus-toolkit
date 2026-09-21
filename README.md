@@ -93,7 +93,7 @@ Reviews not-yet-reviewed tasks in the named OmniFocus project(s) and enriches
 each in place: it fetches any URL the task references (via the model's web_fetch)
 and reads its attachments, then sets a clearer title and appends a `--- Summary
 ---` section to the note. Reviewed tasks are marked with a tag (default
-`reviewed`) so re-runs skip them. Non-destructive: the original note, URL, and
+`Reviewed`) so re-runs skip them. Non-destructive: the original note, URL, and
 attachments are preserved.
 
 Like triage, the reviewer can read linked **X (Twitter)** posts: set
@@ -108,17 +108,16 @@ uv run python omnifocus_task_reviewer.py "Training" "Tech"     # multiple projec
 uv run python omnifocus_task_reviewer.py "Training" --apply    # write: rename, append summary, tag reviewed
 ```
 
-Uses the same `.env` and Anthropic key as the triage tool, plus `REVIEW_TAG` and
-`WEB_FETCH_MAX_USES`.
+Uses the same `.env` and Anthropic key as the triage tool, plus `REVIEW_TAG`,
+`KANBAN_TAG`, and `WEB_FETCH_MAX_USES`.
 
 `REVIEW_TAG` (default `Reviewed`; OmniFocus tag names are case-sensitive) is a
-**top-level** tag, deliberately not a Kanban lane: reviewed items are a reading
-list, and the board shows only tasks you pull onto it (tag one `Kanban ▸ To Do`
-when you decide to act). A `Reviewed` perspective in OmniFocus (tag = Reviewed,
-availability = remaining) is the place to browse them. If you previously ran the
-reviewer with the tag nested under `Kanban`, the first `--apply` moves that tag to
-the top level — every task keeps it, and the lane disappears from the board. Requires a web_fetch-capable model (the `claude-sonnet-5`
-default).
+child of the `KANBAN_TAG` parent (default `Kanban`), so a reviewed task lands in
+the board's `Reviewed` lane and you move it on to `To Do` when you decide to act.
+The first `--apply` finds or creates `Kanban ▸ Reviewed`; if a `Reviewed` tag
+already exists elsewhere (for example at the top level) it is moved under
+`Kanban` instead — every task keeps it. Requires a web_fetch-capable model (the
+`claude-sonnet-5` default).
 
 ## Project sorter (`omnifocus_sorter.py`)
 
@@ -160,12 +159,12 @@ Behavior worth knowing:
   OmniFocus's own Sort menu does.
 - **Sorting by tag** (`--by tag`) needs a priority order: repeat `--tag NAME`
   for each tag, most important first. A task sorts by its highest-priority tag;
-  matching is case-insensitive and by leaf name (so `--tag Waiting` matches a
-  nested `Kanban ▸ Waiting`). Tasks with none of the listed tags sort last.
+  matching is case-insensitive and by leaf name (so `--tag Reviewed` matches a
+  nested `Kanban ▸ Reviewed`). Tasks with none of the listed tags sort last.
 
 ## Kanban board (`omnifocus_kanban_board.py`)
 
-A local drag-and-drop board over the same `Kanban` tag lanes the [Kanban plug-in](omnifocus_kanban_plugin/README.md) uses (`To Do → In Progress → Waiting → Done`). Each column is one lane tag; every open task carrying a lane tag appears as a card, across all projects. Reviewed tasks are **not** on the board — pull one onto it by tagging it `Kanban ▸ To Do`. Dropping a card on another column re-tags the task exactly like the plug-in's actions do (remove every lane tag, add the target), so the board, the plug-in, and the task reviewer stay in agreement.
+A local drag-and-drop board over the same `Kanban` tag lanes the [Kanban plug-in](omnifocus_kanban_plugin/README.md) uses (`Reviewed → To Do → In Progress → Waiting → Done`). Each column is one lane tag; every open task carrying a lane tag appears as a card, across all projects. The task reviewer files each task it enriches into the `Reviewed` lane, so new material enters the board there. Dropping a card on another column re-tags the task exactly like the plug-in's actions do (remove every lane tag, add the target), so the board, the plug-in, and the task reviewer stay in agreement.
 
 ```bash
 uv run python omnifocus_kanban_board.py              # serve http://127.0.0.1:8765/ and open it
@@ -229,9 +228,9 @@ call, and — unlike the CLI tools — act immediately with no dry-run stage.
 - `omnifocus_automation/strikethrough.omnijs` — **OmniOutliner 6 Pro**: toggles
   strikethrough on the selected text, or on the topic text of the selected rows.
 - `omnifocus_kanban_plugin/of-kanban-board.omnifocusjs` — **OmniFocus**: a
-  vendored copy of the upstream Kanban Board plug-in (v1.3, functionally
-  upstream's four lanes; a `Reviewed` lane was added in 1.2 and removed again).
-  See [its README](omnifocus_kanban_plugin/README.md) for the history and how to
+  vendored copy of the upstream Kanban Board plug-in with an added `Reviewed`
+  lane (v1.4), pairing with the task reviewer's `Kanban ▸ Reviewed` tag. See
+  [its README](omnifocus_kanban_plugin/README.md) for what was changed and how to
   install it.
 
 ### Strikethrough toggle (`omnifocus_automation/strikethrough.omnijs`)

@@ -76,13 +76,14 @@ def parse_read_result(stdout: str) -> Tuple[list, list]:
     return payload["tasks"], payload["unresolved"]
 
 
-# Reads incomplete, non-dropped tasks in the named projects that have not been
-# reviewed and are not on the Kanban board, with attachment metadata, entirely
-# in OmniJS (attachments + tags need it). A task is skipped if it carries a tag
-# named reviewTag (the top-level review tag — matched by exact, case-sensitive
-# name) OR any tag in the Kanban subtree (the KANBAN_TAG parent or any lane), so
-# a task pulled onto the board (To Do / In Progress / Done) is never re-enriched
-# even if its review tag was removed.
+# Reads incomplete, non-dropped tasks in the named projects that are not yet on
+# the Kanban board, with attachment metadata, entirely in OmniJS (attachments +
+# tags need it). A task is skipped if it carries ANY tag in the Kanban subtree
+# (the KANBAN_TAG parent or any descendant lane) — so once a task has been
+# reviewed (Reviewed lane) and progresses to To Do / In Progress / Done it is
+# never re-enriched — with a fallback skip on any tag named reviewTag (exact,
+# case-sensitive match; guards a stray top-level Reviewed from before the
+# reparent under Kanban).
 # argv[0] = JSON {projectNames: [...], reviewTag: "...", kanbanTag: "..."}.
 READ_TASKS_JXA = r"""
 function run(argv) {
@@ -273,11 +274,12 @@ def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
 # ids, that encoded text, and the (trusted, config) tag names (REVIEW_TAG and
 # KANBAN_TAG) reach the source.
 #
-# The review tag is a TOP-LEVEL tag, deliberately outside the Kanban parent:
-# reviewed items are a reading pile, not board work, and the board shows only
-# tasks pulled onto it by hand. If a legacy `Kanban ▸ <REVIEW_TAG>` lane exists
-# it is moved to the top level (moveTags keeps every task's tag, so this is the
-# whole migration) rather than creating a second tag of the same name.
+# The review tag is a CHILD of the Kanban parent (`Kanban ▸ <REVIEW_TAG>`), the
+# board's first lane: the Kanban parent is found or created, then the review tag
+# under it. A stray tag of that name elsewhere (e.g. a top-level `Reviewed` from
+# the interim pull-only design) is reparented under Kanban with moveTags — which
+# keeps every task's tag, so that one call is the whole migration — rather than
+# creating a second tag of the same name.
 WRITE_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
@@ -297,12 +299,12 @@ function run(argv) {
         "  const writes = [" + rows + "];" +
         "  const tagName = " + JSON.stringify(cfg.reviewTag) + ";" +
         "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
-        "  let tag = tags.byName(tagName);" +   // top-level tags only
+        "  const parent = flattenedTags.byName(kanbanName) || new Tag(kanbanName);" +
+        "  let tag = parent.children.byName(tagName);" +
         "  if (!tag) {" +
-        "    const kanban = flattenedTags.byName(kanbanName);" +
-        "    const nested = kanban ? (kanban.flattenedChildren || []).find(c => c.name === tagName) : null;" +
-        "    if (nested) { moveTags([nested], tags.ending); tag = nested; }" +
-        "    else { tag = new Tag(tagName); }" +
+        "    const existing = flattenedTags.byName(tagName);" +
+        "    if (existing) { moveTags([existing], parent); tag = existing; }" +
+        "    else { tag = new Tag(tagName, parent); }" +
         "  }" +
         "  const applied = []; const failed = [];" +
         "  writes.forEach(r => {" +

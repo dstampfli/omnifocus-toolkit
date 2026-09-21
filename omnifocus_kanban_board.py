@@ -2,8 +2,8 @@
 """OmniFocus Kanban board: a local drag-and-drop web UI over the Kanban lanes.
 
 Serves one page at http://127.0.0.1:<port>/ where each column is a child tag of
-the `Kanban` parent (To Do / In Progress / Waiting / Done, as created by the
-Kanban plug-in's Display Board action). Reviewed tasks are not on the board. Dropping a card on a column
+the `Kanban` parent (Reviewed / To Do / In Progress / Waiting / Done, as created
+by the Kanban plug-in's Display Board action). Dropping a card on a column
 re-tags the task exactly like the plug-in does: remove every Kanban lane tag,
 add the target lane.
 

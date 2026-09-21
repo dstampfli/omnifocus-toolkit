@@ -5,7 +5,7 @@
 		var targetTag = flattenedTags.byName("Kanban") || new Tag("Kanban")
 		
 		// ADD KANBAN CATEGORIES IF MISSING
-		var tagTitles = ["To Do", "In Progress", "Waiting", "Done"]
+		var tagTitles = ["Reviewed", "To Do", "In Progress", "Waiting", "Done"]
 		tagTitles.forEach(title => {
 			if (!targetTag.children.byName(title)){
 				new Tag(title, targetTag)

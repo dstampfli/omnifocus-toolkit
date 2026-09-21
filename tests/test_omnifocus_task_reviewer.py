@@ -168,15 +168,17 @@ def test_build_write_config_includes_kanban_tag():
     assert cfg["kanbanTag"] == "Kanban"
 
 
-def test_write_jxa_keeps_review_tag_out_of_kanban_lanes():
-    """Reviewed tasks must not land on the Kanban board: the write program
-    resolves the review tag at the top level, un-nests a legacy Kanban child of
-    that name, and never creates it under the Kanban parent."""
+def test_write_jxa_nests_review_tag_under_kanban():
+    """Reviewed tasks land in the board's Reviewed lane: the write program
+    resolves the review tag as a child of the Kanban parent, reparents a stray
+    tag of that name under Kanban (keeping every task's tag), and never creates
+    it at the top level."""
     from omnifocus_task_reviewer import WRITE_JXA
-    assert "tags.byName(tagName)" in WRITE_JXA
-    assert "moveTags([nested], tags.ending)" in WRITE_JXA
-    assert "new Tag(tagName, parent)" not in WRITE_JXA
-    assert "moveTags([existing], parent)" not in WRITE_JXA
+    assert "parent.children.byName(tagName)" in WRITE_JXA
+    assert "moveTags([existing], parent)" in WRITE_JXA
+    assert "new Tag(tagName, parent)" in WRITE_JXA
+    assert "tags.byName(tagName)" not in WRITE_JXA
+    assert "tags.ending" not in WRITE_JXA
 
 
 def test_build_write_config_strips_medium_promo_from_note():
