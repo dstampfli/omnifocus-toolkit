@@ -172,6 +172,7 @@ uv run python omnifocus_kanban_board.py --port 9000  # another port
 uv run python omnifocus_kanban_board.py --no-open    # don't open the browser
 ```
 
+- **Search** as you type (`/` focuses the field from anywhere, Escape clears it): every word you enter must appear, case-insensitively, in a card's title, note, project name, or one of its non-lane tags. Combines with the project and tag filters; lane counts follow the result.
 - Filter by project and/or tag (the tag list is built from the cards' non-lane tags; `Untagged` matches cards with none), sort within columns by due date (default), title, project, or added; click a title to open the task in OmniFocus. The board refreshes every 30 s (paused while you drag).
 - Dropping on **Done** only tags; completing is still done in OmniFocus. Completed and dropped tasks never appear.
 - **There is no `--apply` flag**: each drop is your explicit action and writes immediately. This is the one tool in the toolkit that departs from dry-run-by-default.

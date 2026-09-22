@@ -77,7 +77,7 @@
     color: var(--ink-2);
   }
   .controls label { display: flex; align-items: center; gap: 6px; }
-  select, button {
+  select, button, input[type="search"] {
     font: inherit;
     font-size: 14px;
     color: var(--ink);
@@ -88,6 +88,11 @@
   }
   button { cursor: pointer; }
   button:hover { border-color: var(--rail); }
+  /* Search: narrows the cards as you type (see matchesSearch). Sits in the
+     header, which render() never rebuilds, so the text survives auto-refresh. */
+  input[type="search"] { width: 210px; -webkit-appearance: none; appearance: none; }
+  input[type="search"]:focus { border-color: var(--rail); }
+  input[type="search"]::placeholder { color: var(--ink-3); }
 
   /* Checkbox dropdowns for the Project and Tag filters. The panel lives inside
      the .filter container, which render() never replaces, so an open panel
@@ -296,6 +301,8 @@
 <header>
   <h1 id="title">Kanban</h1>
   <div class="controls">
+    <input id="search" type="search" placeholder="Search cards&hellip; ( / )" aria-label="Search cards"
+           autocomplete="off" spellcheck="false">
     <div class="filter" id="project-filter">
       <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false">
         <span class="filter-name">Project</span>
@@ -369,6 +376,7 @@
     projects: new Set(),
     tags: new Set(),
     columns: loadColumns(),
+    query: "",
     sort: "due",
     dragging: false,
     inflight: 0,
@@ -488,7 +496,22 @@
     return ids.some((id) => state.tags.has(id));
   }
 
-  const matchesFilter = (card) => matchesProject(card) && matchesTag(card);
+  // Search: every whitespace-separated word of the query must appear, case-
+  // insensitively, somewhere in the card's title, note excerpt, project name
+  // ("Inbox" when it has none) or one of its non-lane tag names.
+  const searchWords = () => state.query.toLowerCase().split(/\s+/).filter(Boolean);
+  function haystack(card) {
+    return [card.name || "", card.note_excerpt || "", card.project ? card.project.name : "Inbox"]
+      .concat(card.tags || []).join("\n").toLowerCase();
+  }
+  function matchesSearch(card) {
+    const words = searchWords();
+    if (words.length === 0) return true;
+    const text = haystack(card);
+    return words.every((w) => text.includes(w));
+  }
+
+  const matchesFilter = (card) => matchesProject(card) && matchesTag(card) && matchesSearch(card);
 
   // Rebuilds one checkbox dropdown from entries {id, name, count, depth}.
   // Drops selected ids no longer on offer, restores focus to the row that had
@@ -797,7 +820,7 @@
     if (cards.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "Nothing here";
+      empty.textContent = searchWords().length ? "No matches" : "Nothing here";
       list.appendChild(empty);
     }
     for (const c of cards) list.appendChild(cardEl(c));
@@ -884,6 +907,27 @@
     if (!inside) closeFilters();
   });
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeFilters(); });
+  const search = $("#search");
+  search.addEventListener("input", () => { state.query = search.value; render(); });
+  search.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && search.value) {
+      ev.stopPropagation();
+      search.value = "";
+      state.query = "";
+      render();
+    }
+  });
+  // "/" focuses the search field from anywhere that is not already a text control.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "/" || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const t = ev.target;
+    const typing = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement ||
+      t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+    if (typing) return;
+    ev.preventDefault();
+    search.focus();
+    search.select();
+  });
   $("#sort").addEventListener("change", (ev) => { state.sort = ev.target.value; render(); });
   $("#refresh").addEventListener("click", load);
   setInterval(() => { if (!state.dragging && state.inflight === 0) load(); }, 30000);
