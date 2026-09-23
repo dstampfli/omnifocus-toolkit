@@ -46,12 +46,20 @@ def triage_inbox(apply: bool = False) -> dict:
 
 @mcp.tool()
 def review_tasks(projects: list[str], apply: bool = False,
-                 max_tasks: int = DEFAULT_MAX_TASKS) -> dict:
+                 max_tasks: int = DEFAULT_MAX_TASKS, force: bool = False) -> dict:
     """Review not-yet-reviewed tasks in the named OmniFocus project(s),
     enriching each task's title and note.
 
+    Each task becomes "Read: / Watch: / Do: <title>" and its note gets a
+    summary block with author/creator, link, and synopsis.
+
     With apply=True, write the changes and tag each task reviewed. The default
     apply=False previews the proposed enrichments and changes nothing.
+
+    force=True also re-reviews tasks that are already tagged Reviewed or sit on
+    the Kanban board, replacing their earlier summary block (a task already in
+    a lane keeps that lane). Use it after a summary-format change; leave it off
+    for routine runs.
 
     Each task review is a slow API call, so this reviews at most `max_tasks`
     tasks per call and returns `remaining` = how many unreviewed tasks are left.
@@ -60,7 +68,8 @@ def review_tasks(projects: list[str], apply: bool = False,
     short enough to finish within the scheduled task's tool timeout.
     """
     try:
-        return reviewer.run_review(projects, apply=apply, max_tasks=max_tasks)
+        return reviewer.run_review(projects, apply=apply, max_tasks=max_tasks,
+                                   force=force)
     except Exception as e:
         return {"error": f"review_tasks failed: {e}"}
 

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """OmniFocus task reviewer: enrich not-yet-reviewed tasks in named projects.
 
-For each incomplete task in the given project(s) that does not already carry the
-review tag, fetch its linked page(s) and read its attachments, then set a clearer
-title and append a summary to the note. Dry-run by default; --apply writes.
+For each incomplete task in the given project(s) that is not yet reviewed (or
+every open task with --force), fetch its linked page(s) and read its attachments,
+then set a "Read: / Watch: / Do: <title>" name and replace the note's summary
+block with author/creator, link, and synopsis. Dry-run by default; --apply writes.
 """
 
 import json
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 
 import anthropic
 from dotenv import load_dotenv
@@ -58,15 +60,49 @@ def _load_config():
 # --------------------------------------------------------------------------
 
 
+# The title verb per kind; `other` keeps the verb the model chose.
+KIND_VERB = {"book": "Read", "video": "Watch", "course": "Do"}
+# The by-line label in the note, per kind.
+KIND_BY_LABEL = {"book": "Author", "video": "Creator", "course": "Instructors",
+                 "other": "By"}
+_VERB_PREFIX = re.compile(r"^(?:read|watch|do)\s*:\s*", re.IGNORECASE)
+
+
 class Enrichment(BaseModel):
-    new_title: str
-    summary: str
+    """The model's structured answer for one task.
+
+    Only the six fields below are in the schema the model fills in; the task
+    name and note text the toolkit writes are DERIVED from them (new_title,
+    summary) so the format is deterministic and never depends on the model
+    remembering the house style."""
+    kind: Literal["book", "video", "course", "other"]
+    verb: Literal["Read", "Watch", "Do"]
+    title: str
+    by: str
+    link: str
+    synopsis: str
+
+    @property
+    def new_title(self) -> str:
+        verb = KIND_VERB.get(self.kind, self.verb)
+        return f"{verb}: {_VERB_PREFIX.sub('', self.title.strip())}"
+
+    @property
+    def summary(self) -> str:
+        lines = []
+        if self.by.strip():
+            lines.append(f"{KIND_BY_LABEL[self.kind]}: {self.by.strip()}")
+        if self.link.strip():
+            lines.append(f"Link: {self.link.strip()}")
+        lines.append(f"Synopsis: {self.synopsis.strip()}")
+        return "\n".join(lines)
 
 
-def parse_args(argv) -> Tuple[List[str], bool]:
+def parse_args(argv) -> Tuple[List[str], bool, bool]:
     apply = "--apply" in argv
-    projects = [a for a in argv if a != "--apply"]
-    return projects, apply
+    force = "--force" in argv
+    projects = [a for a in argv if a not in ("--apply", "--force")]
+    return projects, apply, force
 
 
 # ------------------------------- read stage -------------------------------
@@ -83,8 +119,10 @@ def parse_read_result(stdout: str) -> Tuple[list, list]:
 # reviewed (Reviewed lane) and progresses to To Do / In Progress / Done it is
 # never re-enriched — with a fallback skip on any tag named reviewTag (exact,
 # case-sensitive match; guards a stray top-level Reviewed from before the
-# reparent under Kanban).
-# argv[0] = JSON {projectNames: [...], reviewTag: "...", kanbanTag: "..."}.
+# reparent under Kanban). With force both skips are off and every open task is
+# returned, so an already-reviewed task can be re-enriched (e.g. after a
+# summary-format change).
+# argv[0] = JSON {projectNames: [...], reviewTag: "...", kanbanTag: "...", force: bool}.
 READ_TASKS_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
@@ -92,11 +130,13 @@ function run(argv) {
     const namesJson = JSON.stringify(cfg.projectNames);
     const tagJson = JSON.stringify(cfg.reviewTag);
     const kanbanJson = JSON.stringify(cfg.kanbanTag);
+    const forceJson = JSON.stringify(!!cfg.force);
     const omni =
         "(() => {" +
         "  const wanted = " + namesJson + ";" +
         "  const reviewTag = " + tagJson + ";" +
         "  const kanbanName = " + kanbanJson + ";" +
+        "  const force = " + forceJson + ";" +
         "  const kanbanParent = flattenedTags.byName(kanbanName);" +
         "  const kanbanIds = {};" +
         "  if (kanbanParent) {" +
@@ -112,8 +152,8 @@ function run(argv) {
         "      if (!t) return;" +
         "      if (t.completed || t.taskStatus === Task.Status.Dropped) return;" +
         "      const ttags = t.tags || [];" +
-        "      if (ttags.some(x => kanbanIds[x.id.primaryKey])) return;" +
-        "      if (ttags.map(x => x.name).indexOf(reviewTag) !== -1) return;" +
+        "      if (!force && ttags.some(x => kanbanIds[x.id.primaryKey])) return;" +
+        "      if (!force && ttags.map(x => x.name).indexOf(reviewTag) !== -1) return;" +
         "      let atts = [];" +
         "      try { atts = t.attachments || []; } catch (e) { atts = []; }" +
         "      const meta = atts.map((a, idx) => {" +
@@ -132,9 +172,9 @@ function run(argv) {
 """
 
 
-def read_project_tasks(project_names, review_tag, kanban_tag):
+def read_project_tasks(project_names, review_tag, kanban_tag, force=False):
     cfg = json.dumps({"projectNames": project_names, "reviewTag": review_tag,
-                      "kanbanTag": kanban_tag})
+                      "kanbanTag": kanban_tag, "force": bool(force)})
     payload = run_jxa(READ_TASKS_JXA, cfg)
     return payload["tasks"], payload["unresolved"]
 
@@ -164,12 +204,26 @@ def build_system_prompt():
         "without opening it. You are given the task's current name, note "
         "(which may contain a URL), and any image/PDF attachments.\n\n"
         "Read the note and attachments, and FETCH any URL the task references "
-        "to understand the linked content. Then produce:\n"
-        "- new_title: a concise, specific title (<= ~80 chars). If the current "
-        "name is already clear, you may keep it.\n"
-        "- summary: 1-3 sentences on what this is and why it matters.\n\n"
-        "Base the summary on the actual fetched/attached content, not the URL "
-        "string alone. Do not invent facts you cannot see."
+        "to understand the linked content. Then classify the item and fill in "
+        "every field:\n"
+        "- kind: book, video, course, or other.\n"
+        "- verb: the action the owner will take: Read (books, articles, posts, "
+        "docs), Watch (videos, talks, recordings), or Do (courses, exams, "
+        "hands-on work). For book/video/course the verb is implied; for other, "
+        "choose the best fit of the three.\n"
+        "- title: the work's own title, cleanly (<= ~80 chars). Do NOT include "
+        "a prefix such as 'Read:', 'Book:' or 'YouTube:'; the toolkit adds the "
+        "verb itself.\n"
+        "- by: who made it: the author (book), creator or channel (video), "
+        "instructor(s) or provider (course), or the responsible person or "
+        "organisation (other). Empty string if you cannot determine it.\n"
+        "- link: the canonical URL of the work itself, taken from the note, an "
+        "attached web link, or the fetched page. Empty string if there is none.\n"
+        "- synopsis: 2-4 sentences on what it covers, who it is for, and why it "
+        "matters to the owner.\n\n"
+        "Base everything on the actual fetched/attached content, not the URL "
+        "string alone. Do not invent facts you cannot see; leave by/link empty "
+        "rather than guessing."
     )
 
 
@@ -234,7 +288,6 @@ def review_tasks(tasks, review_fn=review_task, max_workers=None):
 
 # ------------------------------- apply stage -------------------------------
 
-import re  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 # Strip line/paragraph separators and C0/C1 control chars (except \n and \t)
@@ -252,13 +305,25 @@ def _stamp(now=None):
     return (now or datetime.now()).strftime("%m/%d/%Y %H%M")
 
 
+SUMMARY_MARKER = "--- Summary ---"
+
+
+def strip_summary_blocks(note):
+    """Drop every summary block an earlier review appended: everything from the
+    first marker to the end of the note. The toolkit only ever appends at the
+    end, so a re-review replaces the block instead of stacking another."""
+    note = note or ""
+    i = note.find(SUMMARY_MARKER)
+    return (note if i == -1 else note[:i]).rstrip()
+
+
 def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
     writes = []
     for task, enrichment in reviewed:
         title = _sanitize(enrichment.new_title).strip()
         summary = _sanitize(enrichment.summary).strip()
-        original = strip_medium_promo(task.get("note", "")).strip()
-        body = f"--- Summary ---\n{_stamp(now)}\n{summary}"
+        original = strip_summary_blocks(strip_medium_promo(task.get("note", ""))).strip()
+        body = f"{SUMMARY_MARKER}\n{_stamp(now)}\n{summary}"
         note = f"{original}\n\n{body}" if original else body
         writes.append({"taskId": task["id"], "newTitle": title, "note": note})
     return {"writes": writes, "reviewTag": review_tag, "kanbanTag": kanban_tag}
@@ -280,6 +345,10 @@ def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
 # the interim pull-only design) is reparented under Kanban with moveTags — which
 # keeps every task's tag, so that one call is the whole migration — rather than
 # creating a second tag of the same name.
+#
+# The review tag is added only to a task carrying NO Kanban tag yet: a task
+# re-reviewed under --force while it sits in To Do / In Progress / Waiting /
+# Done keeps that lane instead of ending up in two lanes.
 WRITE_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
@@ -306,6 +375,9 @@ function run(argv) {
         "    if (existing) { moveTags([existing], parent); tag = existing; }" +
         "    else { tag = new Tag(tagName, parent); }" +
         "  }" +
+        "  const kanbanIds = {};" +
+        "  kanbanIds[parent.id.primaryKey] = true;" +
+        "  (parent.flattenedChildren || []).forEach(c => { kanbanIds[c.id.primaryKey] = true; });" +
         "  const applied = []; const failed = [];" +
         "  writes.forEach(r => {" +
         "    const t = Task.byIdentifier(r[0]);" +
@@ -313,7 +385,8 @@ function run(argv) {
         "    try {" +
         "      t.name = decodeURIComponent(r[1]);" +
         "      t.note = decodeURIComponent(r[2]);" +   // preserves attachments
-        "      t.addTag(tag);" +
+        "      const inLane = (t.tags || []).some(x => kanbanIds[x.id.primaryKey]);" +
+        "      if (!inLane) t.addTag(tag);" +
         "      applied.push(t.name);" +
         "    } catch (e) { failed.push(r[0]); }" +
         "  });" +
@@ -354,7 +427,8 @@ def format_report(reviewed, failed, unresolved, applied_names, dry_run):
         lines.append(f"{header} {len(reviewed)} task(s):")
         for task, enrichment in reviewed:
             lines.append(f"  * {task['name']}  ->  {enrichment.new_title}")
-            lines.append(f"      {enrichment.summary}")
+            for line in enrichment.summary.splitlines():
+                lines.append(f"      {line}")
     if failed:
         lines.append("")
         lines.append(f"Failed ({len(failed)}):")
@@ -369,8 +443,11 @@ def format_report(reviewed, failed, unresolved, applied_names, dry_run):
 
 
 def _review_pipeline(projects, apply, read, review, apply_fn, review_tag,
-                     kanban_tag, max_tasks=None):
+                     kanban_tag, max_tasks=None, force=False):
     """Shared read -> review -> (optional) apply.
+
+    force re-reviews tasks that are already reviewed or on the board (their
+    earlier summary block is replaced, and a task already in a lane keeps it).
 
     When max_tasks is set, at most that many of the read tasks are reviewed this
     call and `remaining` reports how many unreviewed tasks were left untouched,
@@ -380,7 +457,7 @@ def _review_pipeline(projects, apply, read, review, apply_fn, review_tag,
     Returns (reviewed, failed, unresolved, applied_names, remaining). On write
     failure the affected task moves from `reviewed` to `failed`, matching the
     CLI today."""
-    tasks, unresolved = read(projects, review_tag, kanban_tag)
+    tasks, unresolved = read(projects, review_tag, kanban_tag, force=force)
     remaining = 0
     if max_tasks is not None and len(tasks) > max_tasks:
         remaining = len(tasks) - max_tasks
@@ -400,17 +477,19 @@ def _review_pipeline(projects, apply, read, review, apply_fn, review_tag,
 
 def run_review(projects, apply=False, *, read=read_project_tasks,
                review=review_tasks, apply_fn=apply_enrichments,
-               review_tag=REVIEW_TAG, kanban_tag=KANBAN_TAG, max_tasks=None):
+               review_tag=REVIEW_TAG, kanban_tag=KANBAN_TAG, max_tasks=None,
+               force=False):
     """Review not-yet-reviewed tasks in the named project(s) and return a
     structured, JSON-serializable result. Dry-run by default.
 
     max_tasks bounds how many tasks are reviewed this call; the returned
     `remaining` count is how many unreviewed tasks were left for a follow-up
     call, so a scheduled agent can loop until it reaches 0 instead of making one
-    unbounded call that may exceed its client timeout."""
+    unbounded call that may exceed its client timeout. force re-reviews tasks
+    already reviewed or on the board, replacing their summary block."""
     reviewed, failed, unresolved, applied_names, remaining = _review_pipeline(
         projects, apply, read, review, apply_fn, review_tag, kanban_tag,
-        max_tasks=max_tasks)
+        max_tasks=max_tasks, force=force)
     return {
         "dry_run": not apply,
         "reviewed": [{"id": t["id"], "old_name": t["name"],
@@ -428,15 +507,15 @@ def run_review(projects, apply=False, *, read=read_project_tasks,
 
 
 def main(argv):
-    projects, apply = parse_args(argv)
+    projects, apply, force = parse_args(argv)
     if not projects:
-        print("usage: omnifocus_task_reviewer.py PROJECT [PROJECT ...] [--apply]",
+        print("usage: omnifocus_task_reviewer.py PROJECT [PROJECT ...] [--apply] [--force]",
               file=sys.stderr)
         return 2
 
     reviewed, failed, unresolved, applied_names, _remaining = _review_pipeline(
         projects, apply, read_project_tasks, review_tasks, apply_enrichments,
-        REVIEW_TAG, KANBAN_TAG)
+        REVIEW_TAG, KANBAN_TAG, force=force)
 
     print(format_report(reviewed, failed, unresolved, applied_names, dry_run=not apply))
     return 1 if (failed or unresolved) else 0

@@ -91,9 +91,24 @@ uv run python omnifocus_inbox_triage.py --apply    # classify, then move high-co
 
 Reviews not-yet-reviewed tasks in the named OmniFocus project(s) and enriches
 each in place: it fetches any URL the task references (via the model's web_fetch)
-and reads its attachments, then sets a clearer title and appends a `--- Summary
----` section to the note. Reviewed tasks are marked with a tag (default
-`Reviewed`) so re-runs skip them. Non-destructive: the original note, URL, and
+and reads its attachments, then renames the task `Read: <title>` (books,
+articles), `Watch: <title>` (videos) or `Do: <title>` (courses, exams) and
+replaces the note's `--- Summary ---` section with a timestamped block:
+
+```
+--- Summary ---
+09/23/2026 1055
+Author: William Denniss
+Link: https://www.manning.com/books/kubernetes-for-developers
+Synopsis: ...
+```
+
+The first line reads `Creator:` for a video, `Instructors:` for a course and
+`By:` for anything else, and it (like `Link:`) is left out when the model cannot
+find it. Reviewed tasks are marked with a tag (default `Reviewed`) so re-runs
+skip them; pass `--force` to re-review them anyway, for example after a format
+change: the old summary block is replaced rather than stacked, and a task already
+in a Kanban lane keeps that lane. Non-destructive: the original note, URL, and
 attachments are preserved.
 
 Like triage, the reviewer can read linked **X (Twitter)** posts: set
@@ -106,6 +121,7 @@ run by `X_FETCH_MAX_USES` (default 25), a quota shared with triage.
 uv run python omnifocus_task_reviewer.py "Training"            # dry-run: show proposed enrichments
 uv run python omnifocus_task_reviewer.py "Training" "Tech"     # multiple projects
 uv run python omnifocus_task_reviewer.py "Training" --apply    # write: rename, append summary, tag reviewed
+uv run python omnifocus_task_reviewer.py "Training" --force --apply  # re-review already-reviewed tasks too (replaces their summary block)
 ```
 
 Uses the same `.env` and Anthropic key as the triage tool, plus `REVIEW_TAG`,
@@ -191,8 +207,10 @@ Tools:
 
 - `triage_inbox(apply=false)` — classify open Inbox tasks; with `apply=true`,
   move high-confidence matches into their project.
-- `review_tasks(projects, apply=false)` — enrich not-yet-reviewed tasks in the
-  named project(s); with `apply=true`, write changes and tag them reviewed.
+- `review_tasks(projects, apply=false, max_tasks=5, force=false)` — enrich
+  not-yet-reviewed tasks in the named project(s); with `apply=true`, write
+  changes and tag them reviewed; `force=true` re-reviews already-reviewed tasks,
+  replacing their summary block.
 - `sort_project(projects, by, descending=false, apply=false, tag_order=null)` —
   reorder the tasks in the named project(s) by one of the eight sort keys above
   or by `tag` (pass `tag_order`, a priority-ordered list of tag names); with

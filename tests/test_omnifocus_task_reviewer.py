@@ -2,27 +2,76 @@ import pytest
 from omnifocus_task_reviewer import Enrichment, parse_args, _load_config
 
 
+def _enr(title="T", synopsis="S", kind="other", verb="Read", by="", link=""):
+    """An Enrichment with the model-facing fields; new_title/summary are derived."""
+    return Enrichment(kind=kind, verb=verb, title=title, by=by, link=link, synopsis=synopsis)
+
+
 def test_enrichment_model():
-    e = Enrichment(new_title="T", summary="S")
-    assert e.new_title == "T" and e.summary == "S"
+    e = Enrichment(kind="book", verb="Read", title="T", by="A", link="https://l", synopsis="S")
+    assert e.new_title == "Read: T"
+    assert e.summary == "Author: A\nLink: https://l\nSynopsis: S"
+
+
+def test_enrichment_title_verb_is_fixed_by_kind():
+    # book/video/course ignore whatever verb the model chose; only `other` uses it
+    assert _enr(kind="book", verb="Watch", title="K8s").new_title == "Read: K8s"
+    assert _enr(kind="video", verb="Read", title="Tokens").new_title == "Watch: Tokens"
+    assert _enr(kind="course", verb="Read", title="Masterclass").new_title == "Do: Masterclass"
+    assert _enr(kind="other", verb="Do", title="Sit the exam").new_title == "Do: Sit the exam"
+    assert _enr(kind="other", verb="Watch", title="Keynote").new_title == "Watch: Keynote"
+
+
+def test_enrichment_title_strips_duplicate_verb_prefix_and_whitespace():
+    assert _enr(kind="book", title="  Read: K8s ").new_title == "Read: K8s"
+    assert _enr(kind="video", title="watch: Tokens").new_title == "Watch: Tokens"
+    assert _enr(kind="other", verb="Do", title="Do: Register").new_title == "Do: Register"
+
+
+def test_enrichment_summary_label_follows_kind():
+    assert _enr(kind="book", by="A").summary.startswith("Author: A\n")
+    assert _enr(kind="video", by="C").summary.startswith("Creator: C\n")
+    assert _enr(kind="course", by="I").summary.startswith("Instructors: I\n")
+    assert _enr(kind="other", by="B").summary.startswith("By: B\n")
+
+
+def test_enrichment_summary_omits_empty_by_and_link():
+    assert _enr(by="", link="", synopsis="Only this.").summary == "Synopsis: Only this."
+    assert _enr(by="  ", link="https://l", synopsis="S").summary == "Link: https://l\nSynopsis: S"
+    assert _enr(kind="book", by="A", link=" ", synopsis="S").summary == "Author: A\nSynopsis: S"
+
+
+def test_enrichment_schema_has_no_derived_fields():
+    props = Enrichment.model_json_schema()["properties"]
+    assert set(props) == {"kind", "verb", "title", "by", "link", "synopsis"}
+    assert props["kind"]["enum"] == ["book", "video", "course", "other"]
+    assert props["verb"]["enum"] == ["Read", "Watch", "Do"]
 
 
 def test_parse_args_projects_and_apply():
-    projects, apply = parse_args(["Training", "Tech", "--apply"])
+    projects, apply, force = parse_args(["Training", "Tech", "--apply"])
     assert projects == ["Training", "Tech"]
     assert apply is True
+    assert force is False
 
 
 def test_parse_args_dry_run_default():
-    projects, apply = parse_args(["Training"])
+    projects, apply, force = parse_args(["Training"])
     assert projects == ["Training"]
     assert apply is False
+    assert force is False
 
 
 def test_parse_args_no_projects():
-    projects, apply = parse_args(["--apply"])
+    projects, apply, force = parse_args(["--apply"])
     assert projects == []
     assert apply is True
+
+
+def test_parse_args_force():
+    projects, apply, force = parse_args(["Training", "--force", "--apply"])
+    assert projects == ["Training"]
+    assert apply is True and force is True
 
 
 def test_load_config_defaults(monkeypatch):
@@ -83,9 +132,10 @@ from omnifocus_task_reviewer import build_system_prompt, review_tasks
 
 def test_build_system_prompt_mentions_key_rules():
     p = build_system_prompt().lower()
-    assert "title" in p
-    assert "summary" in p
-    assert "fetch" in p  # instructs the model to fetch URLs
+    for word in ("book", "video", "course", "read", "watch", "do", "title",
+                 "synopsis", "link", "fetch"):
+        assert word in p, word
+    assert "do not invent" in p
 
 
 def test_review_tasks_isolates_per_task_failures():
@@ -96,12 +146,12 @@ def test_review_tasks_isolates_per_task_failures():
     def fake_review(task, client, x_fetcher=None):
         if task["id"] == "t2":
             raise RuntimeError("boom")
-        return Enrichment(new_title=task["name"].upper(), summary="s")
+        return _enr(title=task["name"].upper())
 
     reviewed, failed = review_tasks(tasks, review_fn=fake_review)
     assert [t["id"] for t, _ in reviewed] == ["t1", "t3"]
     assert [t["id"] for t, _ in failed] == ["t2"]
-    assert reviewed[0][1].new_title == "ONE"
+    assert reviewed[0][1].new_title == "Read: ONE"
 
 
 def test_review_tasks_runs_reviews_concurrently():
@@ -115,7 +165,7 @@ def test_review_tasks_runs_reviews_concurrently():
 
     def review_fn(task, client, x_fetcher=None):
         barrier.wait()
-        return Enrichment(new_title=task["name"], summary="s")
+        return _enr(title=task["name"])
 
     tasks = [{"id": f"t{i}", "name": f"n{i}", "note": "", "attachments": []}
              for i in range(n)]
@@ -133,7 +183,7 @@ def test_review_tasks_preserves_order_under_concurrency():
     def review_fn(task, client, x_fetcher=None):
         i = int(task["id"][1:])
         release[i].wait(timeout=5)              # gated so t2 finishes first
-        return Enrichment(new_title=task["name"], summary="s")
+        return _enr(title=task["name"])
 
     tasks = [{"id": f"t{i}", "name": f"n{i}", "note": "", "attachments": []}
              for i in range(3)]
@@ -149,11 +199,11 @@ from omnifocus_task_reviewer import build_write_config
 
 def test_build_write_config_appends_summary_preserving_note():
     task = {"id": "t1", "name": "old", "note": "original http://x", "attachments": []}
-    reviewed = [(task, Enrichment(new_title="New Title", summary="It is about X."))]
+    reviewed = [(task, _enr(title="New Title", synopsis="It is about X."))]
     cfg = build_write_config(reviewed, "reviewed")
     w = cfg["writes"][0]
     assert w["taskId"] == "t1"
-    assert w["newTitle"] == "New Title"
+    assert w["newTitle"] == "Read: New Title"
     assert w["note"].startswith("original http://x")
     assert "--- Summary ---" in w["note"]
     assert "It is about X." in w["note"]
@@ -162,7 +212,7 @@ def test_build_write_config_appends_summary_preserving_note():
 
 def test_build_write_config_includes_kanban_tag():
     task = {"id": "t1", "name": "old", "note": "", "attachments": []}
-    reviewed = [(task, Enrichment(new_title="T", summary="S"))]
+    reviewed = [(task, _enr())]
     cfg = build_write_config(reviewed, "Reviewed", "Kanban")
     assert cfg["reviewTag"] == "Reviewed"
     assert cfg["kanbanTag"] == "Kanban"
@@ -187,7 +237,7 @@ def test_build_write_config_strips_medium_promo_from_note():
             "or Play Store <https://play.google.com/b>\n"
             "Sent from my iPhone")
     task = {"id": "t1", "name": "old", "note": note, "attachments": []}
-    reviewed = [(task, Enrichment(new_title="T", summary="S"))]
+    reviewed = [(task, _enr())]
     cfg = build_write_config(reviewed, "reviewed")
     w = cfg["writes"][0]
     assert "Download Medium" not in w["note"]
@@ -200,10 +250,10 @@ def test_build_write_config_strips_medium_promo_from_note():
 def test_build_write_config_strips_line_separators():
     # U+2028 / U+2029 in model text must not survive into the write payload.
     task = {"id": "t1", "name": "old", "note": "", "attachments": []}
-    reviewed = [(task, Enrichment(new_title="a\u2028b", summary="c\u2029d"))]
+    reviewed = [(task, _enr(title="a\u2028b", synopsis="c\u2029d"))]
     cfg = build_write_config(reviewed, "reviewed")
     w = cfg["writes"][0]
-    assert "\u2028" not in w["newTitle"] and w["newTitle"] == "ab"
+    assert "\u2028" not in w["newTitle"] and w["newTitle"] == "Read: ab"
     assert "\u2029" not in w["note"] and "cd" in w["note"]
 
 
@@ -212,12 +262,12 @@ from datetime import datetime
 
 def test_build_write_config_stamps_summary_with_datetime():
     task = {"id": "t1", "name": "old", "note": "orig", "attachments": []}
-    reviewed = [(task, Enrichment(new_title="T", summary="It is about X."))]
+    reviewed = [(task, _enr(title="T", synopsis="It is about X."))]
     now = datetime(2026, 7, 8, 12, 28)
     cfg = build_write_config(reviewed, "Reviewed", "Kanban", now=now)
     note = cfg["writes"][0]["note"]
     # stamp on its own line directly under the header, above the summary text
-    assert "--- Summary ---\n07/08/2026 1228\nIt is about X." in note
+    assert "--- Summary ---\n07/08/2026 1228\nSynopsis: It is about X." in note
 
 
 from omnifocus_task_reviewer import format_report
@@ -225,7 +275,7 @@ from omnifocus_task_reviewer import format_report
 
 def _rv(task_id="t1", name="old", new="New", summary="S"):
     task = {"id": task_id, "name": name, "note": "", "attachments": []}
-    return (task, Enrichment(new_title=new, summary=summary))
+    return (task, _enr(title=new, synopsis=summary))
 
 
 def test_format_report_dry_run_shows_proposed():
@@ -257,17 +307,17 @@ def test_run_review_dry_run_builds_reviewed():
     result = run_review(
         ["Training"],
         apply=False,
-        read=lambda projs, rt, kt: ([_tk("t1", "old")], []),
+        read=lambda projs, rt, kt, force=False: ([_tk("t1", "old")], []),
         review=lambda tasks: ([(_tk("t1", "old"),
-                                Enrichment(new_title="New", summary="S"))], []),
+                                _enr(title="New"))], []),
         apply_fn=lambda rv, rt, kt: ([], []),
     )
     assert result["dry_run"] is True
     assert result["counts"] == {"reviewed": 1, "applied": 0, "failed": 0,
                                 "unresolved": 0, "remaining": 0}
     assert result["reviewed"][0]["old_name"] == "old"
-    assert result["reviewed"][0]["new_title"] == "New"
-    assert result["reviewed"][0]["summary"] == "S"
+    assert result["reviewed"][0]["new_title"] == "Read: New"
+    assert result["reviewed"][0]["summary"] == "Synopsis: S"
 
 
 from omnifocus_task_reviewer import review_task
@@ -283,7 +333,8 @@ class _FakeMessages:
 
         class _Block:
             type = "text"
-            text = '{"new_title": "T", "summary": "S"}'
+            text = ('{"kind": "other", "verb": "Read", "title": "T", '
+                    '"by": "", "link": "", "synopsis": "S"}')
 
         class _Resp:
             content = [_Block()]
@@ -305,7 +356,7 @@ def test_review_task_appends_x_post_text():
     header = captured["content"][0]["text"]
     assert "Linked X post(s):" in header
     assert "X post by jack (@jack): hi 20" in header
-    assert result.new_title == "T"
+    assert result.new_title == "Read: T"
 
 
 def test_review_task_no_fetcher_unchanged():
@@ -317,11 +368,11 @@ def test_review_task_no_fetcher_unchanged():
 
 
 def test_run_review_apply_moves_write_failures_to_failed():
-    reviewed_pairs = [(_tk("t1", "old"), Enrichment(new_title="New", summary="S"))]
+    reviewed_pairs = [(_tk("t1", "old"), _enr(title="New"))]
     result = run_review(
         ["Training"],
         apply=True,
-        read=lambda projs, rt, kt: ([_tk("t1", "old")], []),
+        read=lambda projs, rt, kt, force=False: ([_tk("t1", "old")], []),
         review=lambda tasks: (list(reviewed_pairs), []),
         apply_fn=lambda rv, rt, kt: ([], ["t1"]),   # write failed for t1
     )
@@ -335,7 +386,7 @@ def test_run_review_reports_unresolved_projects():
     result = run_review(
         ["Ghost"],
         apply=False,
-        read=lambda projs, rt, kt: ([], ["Ghost"]),
+        read=lambda projs, rt, kt, force=False: ([], ["Ghost"]),
         review=lambda tasks: ([], []),
         apply_fn=lambda rv, rt, kt: ([], []),
     )
@@ -350,12 +401,12 @@ def test_run_review_caps_at_max_tasks_and_reports_remaining():
     def review(tasks):
         seen["count"] = len(tasks)
         seen["ids"] = [t["id"] for t in tasks]
-        return ([(t, Enrichment(new_title="N", summary="S")) for t in tasks], [])
+        return ([(t, _enr(title="N")) for t in tasks], [])
 
     result = run_review(
         ["P"],
         apply=False,
-        read=lambda projs, rt, kt: (list(all_tasks), []),
+        read=lambda projs, rt, kt, force=False: (list(all_tasks), []),
         review=review,
         apply_fn=lambda rv, rt, kt: ([], []),
         max_tasks=2,
@@ -372,9 +423,9 @@ def test_run_review_no_cap_reviews_all_with_zero_remaining():
     result = run_review(
         ["P"],
         apply=False,
-        read=lambda projs, rt, kt: (list(all_tasks), []),
+        read=lambda projs, rt, kt, force=False: (list(all_tasks), []),
         review=lambda tasks: (
-            [(t, Enrichment(new_title="N", summary="S")) for t in tasks], []),
+            [(t, _enr(title="N")) for t in tasks], []),
         apply_fn=lambda rv, rt, kt: ([], []),
     )
     assert result["counts"]["reviewed"] == 3
@@ -387,11 +438,88 @@ def test_run_review_max_tasks_above_count_reviews_all():
     result = run_review(
         ["P"],
         apply=False,
-        read=lambda projs, rt, kt: (list(all_tasks), []),
+        read=lambda projs, rt, kt, force=False: (list(all_tasks), []),
         review=lambda tasks: (
-            [(t, Enrichment(new_title="N", summary="S")) for t in tasks], []),
+            [(t, _enr(title="N")) for t in tasks], []),
         apply_fn=lambda rv, rt, kt: ([], []),
         max_tasks=10,
     )
     assert result["counts"]["reviewed"] == 2
     assert result["remaining"] == 0
+
+
+# ------------------------- re-review (--force) support -------------------------
+
+from omnifocus_task_reviewer import READ_TASKS_JXA, WRITE_JXA  # noqa: E402
+
+
+def test_strip_summary_blocks_cuts_from_first_marker_to_end():
+    from omnifocus_task_reviewer import strip_summary_blocks
+    assert strip_summary_blocks("keep\n\n--- Summary ---\nx\n\n--- Summary ---\ny") == "keep"
+    assert strip_summary_blocks("no marker here") == "no marker here"
+    assert strip_summary_blocks("--- Summary ---\nonly a block") == ""
+    assert strip_summary_blocks("") == ""
+
+
+def test_build_write_config_replaces_existing_summary_blocks():
+    note = ("https://example.com/book\n\n--- Summary ---\n09/16/2026 2002\nOld one.\n\n"
+            "--- Summary ---\n09/17/2026 2002\nOld two.")
+    task = {"id": "t1", "name": "old", "note": note, "attachments": []}
+    cfg = build_write_config([(task, _enr(synopsis="Fresh."))], "Reviewed", "Kanban",
+                             now=datetime(2026, 9, 23, 10, 0))
+    out = cfg["writes"][0]["note"]
+    assert out.count("--- Summary ---") == 1
+    assert "Old one." not in out and "Old two." not in out
+    assert out == "https://example.com/book\n\n--- Summary ---\n09/23/2026 1000\nSynopsis: Fresh."
+
+
+def test_format_report_indents_every_summary_line():
+    task = {"id": "t1", "name": "old", "note": "", "attachments": []}
+    e = _enr(kind="book", title="K8s", by="A", link="https://l", synopsis="S")
+    out = format_report([(task, e)], [], [], [], dry_run=True)
+    assert "  * old  ->  Read: K8s" in out
+    assert "\n      Author: A\n      Link: https://l\n      Synopsis: S" in out
+
+
+def test_read_project_tasks_passes_force_to_jxa(monkeypatch):
+    import json
+    import omnifocus_task_reviewer as m
+    captured = {}
+
+    def fake_run_jxa(prog, cfg):
+        captured["cfg"] = json.loads(cfg)
+        return {"tasks": [], "unresolved": []}
+    monkeypatch.setattr(m, "run_jxa", fake_run_jxa)
+    m.read_project_tasks(["P"], "Reviewed", "Kanban", force=True)
+    assert captured["cfg"]["force"] is True
+    m.read_project_tasks(["P"], "Reviewed", "Kanban")
+    assert captured["cfg"]["force"] is False
+
+
+def test_read_tasks_jxa_skips_board_and_review_tag_only_without_force():
+    # The OmniJS read must consult the force flag before applying its two skips.
+    assert "cfg.force" in READ_TASKS_JXA
+    assert "if (!force" in READ_TASKS_JXA
+
+
+def test_write_jxa_does_not_add_review_tag_to_task_already_in_a_lane():
+    # A re-reviewed task that sits in To Do / In Progress / ... must stay there:
+    # the write program adds the review tag only to tasks carrying no Kanban tag.
+    assert "kanbanIds" in WRITE_JXA
+    assert "const inLane = (t.tags || []).some(x => kanbanIds[x.id.primaryKey]);" in WRITE_JXA
+    assert "if (!inLane) t.addTag(tag);" in WRITE_JXA
+    assert "      t.addTag(tag);" not in WRITE_JXA
+
+
+def test_run_review_force_reaches_read():
+    seen = {}
+
+    def read(projs, rt, kt, force=False):
+        seen["force"] = force
+        return ([], [])
+    run_review(["P"], apply=False, force=True, read=read,
+               review=lambda tasks: ([], []), apply_fn=lambda rv, rt, kt: ([], []))
+    assert seen["force"] is True
+    run_review(["P"], apply=False, read=read,
+               review=lambda tasks: ([], []), apply_fn=lambda rv, rt, kt: ([], []))
+    assert seen["force"] is False
