@@ -165,6 +165,24 @@ function run() {
         items.push({ id: tid, name: t.name(), note: note, attachments: attMap[tid] || [] });
     }
 
+    // Folder paths also come from OmniJS: in JXA a project's container() and
+    // folder() both throw "Can't convert types" on current OmniFocus, so a JXA
+    // walk silently yields no folder. Map project id -> "Outer ▸ Inner".
+    let folderMap = {};
+    try {
+        const folderScript =
+            "(() => {" +
+            "  const map = {};" +
+            "  flattenedProjects.forEach(p => {" +
+            "    const path = [];" +
+            "    for (let f = p.parentFolder; f; f = f.parent) path.unshift(f.name);" +
+            "    map[p.id.primaryKey] = path.join(' \u25B8 ');" +
+            "  });" +
+            "  return JSON.stringify(map);" +
+            "})()";
+        folderMap = JSON.parse(of.evaluateJavascript(folderScript));
+    } catch (e) { folderMap = {}; }
+
     const projects = [];
     const projs = ofDoc.flattenedProjects();
     for (let i = 0; i < projs.length; i++) {
@@ -172,24 +190,16 @@ function run() {
         let status = '';
         try { status = String(p.status()); } catch (e) {}
 
-        let path = [];
-        try {
-            let f = p.container();
-            while (f && f.class && f.class() === 'folder') {
-                path.unshift(f.name());
-                f = f.container();
-            }
-        } catch (e) {}
-
         // The project's OmniFocus note doubles as its triage description:
         // one line telling the classifier what belongs in this project.
         let note = '';
         try { note = p.note() || ''; } catch (e) {}
 
+        const pid = p.id();
         projects.push({
-            id: p.id(),
+            id: pid,
             name: p.name(),
-            folderPath: path.join(' ▸ '),
+            folderPath: folderMap[pid] || '',
             description: note,
             status: status,
         });

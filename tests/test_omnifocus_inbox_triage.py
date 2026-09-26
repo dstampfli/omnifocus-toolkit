@@ -343,3 +343,12 @@ def test_build_user_message_no_fetcher_unchanged():
     projects = [{"id": "p1", "name": "Reading", "folderPath": "", "description": ""}]
     content = build_user_message(items, projects, _no_bytes, 1000, 4000)
     assert "Linked X post(s):" not in content[1]["text"]
+
+
+def test_read_jxa_takes_folder_path_from_omnijs():
+    # JXA container()/folder() throw on current OmniFocus, so the folder path
+    # must come from OmniJS parentFolder, merged by project id.
+    from omnifocus_inbox_triage import READ_JXA
+    assert "p.parentFolder" in READ_JXA
+    assert "folderPath: folderMap[pid] || ''" in READ_JXA
+    assert "p.container()" not in READ_JXA
