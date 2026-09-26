@@ -523,3 +523,35 @@ def test_run_review_force_reaches_read():
     run_review(["P"], apply=False, read=read,
                review=lambda tasks: ([], []), apply_fn=lambda rv, rt, kt: ([], []))
     assert seen["force"] is False
+
+
+def test_read_tasks_jxa_returns_project_folder():
+    assert "proj.parentFolder ? proj.parentFolder.name : ''" in READ_TASKS_JXA
+    assert "folder: folder" in READ_TASKS_JXA
+
+
+def test_write_jxa_tags_task_with_its_project_folder():
+    # The folder is resolved live in OmniJS (no hard-coded list), a folderless
+    # project adds nothing, and a folder tag never resolves to a Kanban lane.
+    assert "const folder = proj && proj.parentFolder;" in WRITE_JXA
+    assert "if (folder) t.addTag(folderTag(folder.name));" in WRITE_JXA
+    assert "!kanbanIds[x.id.primaryKey]" in WRITE_JXA
+    for name in ("Personal", "Home", "Enablement", "Work"):
+        assert name not in WRITE_JXA
+
+
+def test_format_report_shows_folder_tag_only_when_foldered():
+    task, e = _rv()
+    assert "Tag: Home" in format_report([({**task, "folder": "Home"}, e)], [], [], [], dry_run=True)
+    assert "Tag:" not in format_report([(task, e)], [], [], [], dry_run=True)
+
+
+def test_run_review_reports_folder_tag():
+    task = {**_tk("t1", "old"), "folder": "Work"}
+    result = run_review(
+        ["P"], apply=False,
+        read=lambda projs, rt, kt, force=False: ([task], []),
+        review=lambda tasks: ([(task, _enr(title="New"))], []),
+        apply_fn=lambda rv, rt, kt: ([], []),
+    )
+    assert result["reviewed"][0]["folder_tag"] == "Work"

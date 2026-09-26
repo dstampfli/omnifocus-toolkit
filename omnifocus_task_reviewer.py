@@ -121,7 +121,8 @@ def parse_read_result(stdout: str) -> Tuple[list, list]:
 # case-sensitive match; guards a stray top-level Reviewed from before the
 # reparent under Kanban). With force both skips are off and every open task is
 # returned, so an already-reviewed task can be re-enriched (e.g. after a
-# summary-format change).
+# summary-format change). Each task also carries `folder`, the name of the
+# folder its project sits directly in ('' at the top level), for the report.
 # argv[0] = JSON {projectNames: [...], reviewTag: "...", kanbanTag: "...", force: bool}.
 READ_TASKS_JXA = r"""
 function run(argv) {
@@ -148,6 +149,7 @@ function run(argv) {
         "  wanted.forEach(nm => {" +
         "    const proj = flattenedProjects.find(p => p && p.name === nm && p.status === Project.Status.Active);" +
         "    if (!proj) { unresolved.push(nm); return; }" +
+        "    const folder = proj.parentFolder ? proj.parentFolder.name : '';" +
         "    proj.flattenedTasks.forEach(t => {" +
         "      if (!t) return;" +
         "      if (t.completed || t.taskStatus === Task.Status.Dropped) return;" +
@@ -162,7 +164,7 @@ function run(argv) {
         "        try { len = a.contents ? a.contents.length : -1; } catch (e) {}" +
         "        return { filename: fn, byteLength: len, index: idx };" +
         "      });" +
-        "      tasksOut.push({ id: t.id.primaryKey, name: t.name, note: t.note || '', attachments: meta });" +
+        "      tasksOut.push({ id: t.id.primaryKey, name: t.name, note: t.note || '', attachments: meta, folder: folder });" +
         "    });" +
         "  });" +
         "  return JSON.stringify({ tasks: tasksOut, unresolved: unresolved });" +
@@ -349,6 +351,13 @@ def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
 # The review tag is added only to a task carrying NO Kanban tag yet: a task
 # re-reviewed under --force while it sits in To Do / In Progress / Waiting /
 # Done keeps that lane instead of ending up in two lanes.
+#
+# Every written task also gets a tag named after the folder its project sits
+# directly in (Personal, Home, Work, ...), looked up live from OmniFocus on each
+# run so renamed or new folders need no config; a project outside any folder
+# gets no folder tag. The name comes from OmniFocus inside OmniJS, so no folder
+# text reaches the source. The tag is found by name outside the Kanban subtree
+# (a top-level tag first), or created at the top level if none exists.
 WRITE_JXA = r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
@@ -378,6 +387,15 @@ function run(argv) {
         "  const kanbanIds = {};" +
         "  kanbanIds[parent.id.primaryKey] = true;" +
         "  (parent.flattenedChildren || []).forEach(c => { kanbanIds[c.id.primaryKey] = true; });" +
+        "  const folderTags = {};" +
+        "  const folderTag = nm => {" +
+        "    if (!folderTags[nm]) {" +
+        "      folderTags[nm] = tags.byName(nm)" +
+        "        || flattenedTags.find(x => x.name === nm && !kanbanIds[x.id.primaryKey])" +
+        "        || new Tag(nm);" +
+        "    }" +
+        "    return folderTags[nm];" +
+        "  };" +
         "  const applied = []; const failed = [];" +
         "  writes.forEach(r => {" +
         "    const t = Task.byIdentifier(r[0]);" +
@@ -387,6 +405,9 @@ function run(argv) {
         "      t.note = decodeURIComponent(r[2]);" +   // preserves attachments
         "      const inLane = (t.tags || []).some(x => kanbanIds[x.id.primaryKey]);" +
         "      if (!inLane) t.addTag(tag);" +
+        "      const proj = t.containingProject;" +
+        "      const folder = proj && proj.parentFolder;" +
+        "      if (folder) t.addTag(folderTag(folder.name));" +
         "      applied.push(t.name);" +
         "    } catch (e) { failed.push(r[0]); }" +
         "  });" +
@@ -427,6 +448,8 @@ def format_report(reviewed, failed, unresolved, applied_names, dry_run):
         lines.append(f"{header} {len(reviewed)} task(s):")
         for task, enrichment in reviewed:
             lines.append(f"  * {task['name']}  ->  {enrichment.new_title}")
+            if task.get("folder"):
+                lines.append(f"      Tag: {task['folder']}")
             for line in enrichment.summary.splitlines():
                 lines.append(f"      {line}")
     if failed:
@@ -493,7 +516,8 @@ def run_review(projects, apply=False, *, read=read_project_tasks,
     return {
         "dry_run": not apply,
         "reviewed": [{"id": t["id"], "old_name": t["name"],
-                      "new_title": e.new_title, "summary": e.summary}
+                      "new_title": e.new_title, "summary": e.summary,
+                      "folder_tag": t.get("folder", "")}
                      for t, e in reviewed],
         "applied": applied_names,
         "failed": [{"id": t["id"], "name": t["name"], "error": err}
