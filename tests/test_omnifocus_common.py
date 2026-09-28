@@ -287,3 +287,120 @@ def test_run_jxa_still_exits_on_failure(monkeypatch, capsys):
         run_jxa("x")
     assert info.value.code == 1
     assert "boom" in capsys.readouterr().err
+
+
+from omnifocus_common import (  # noqa: E402
+    FOLDER_TAG_WRITE_JS,
+    TAG_TREE_JS,
+    TOP_FOLDER_JS,
+    embed_js,
+    folder_tag_name,
+    folder_tag_write_fields,
+    kanban_tag_env,
+    resolve_folder_tag,
+    top_folder_segment,
+)
+
+
+def _tag(tid, name, parent=None, in_kanban=False):
+    return {"id": tid, "name": name, "parent_id": parent, "in_kanban": in_kanban}
+
+
+FOLDER_TAGS = [
+    _tag("tHome", "Home"), _tag("tWork", "Work"),
+    _tag("tK", "Kanban", in_kanban=True),
+    _tag("tRev", "Reviewed", "tK", True), _tag("tTodo", "To Do", "tK", True),
+]
+
+
+def test_resolve_folder_tag_matches_top_level_tag():
+    assert resolve_folder_tag("Home", FOLDER_TAGS) == {
+        "kind": "match", "folder": "Home", "tag_id": "tHome"}
+
+
+def test_resolve_folder_tag_is_case_insensitive():
+    assert resolve_folder_tag("WORK", FOLDER_TAGS)["tag_id"] == "tWork"
+
+
+def test_resolve_folder_tag_matches_nested_tag_by_leaf_name():
+    tags = [_tag("tA", "Areas"), _tag("tH", "Home", "tA")]
+    assert resolve_folder_tag("Home", tags) == {
+        "kind": "match", "folder": "Home", "tag_id": "tH"}
+
+
+def test_resolve_folder_tag_never_matches_the_kanban_subtree():
+    tags = [_tag("tK", "Kanban", in_kanban=True), _tag("tW", "Work", "tK", True)]
+    assert resolve_folder_tag("Work", tags)["kind"] == "create"
+
+
+def test_resolve_folder_tag_refuses_to_guess_between_two_leaf_matches():
+    tags = [_tag("a", "Areas"), _tag("h1", "Home", "a"),
+            _tag("p", "Places"), _tag("h2", "home", "p")]
+    assert resolve_folder_tag("Home", tags) == {
+        "kind": "ambiguous", "folder": "Home", "tag_id": None}
+
+
+def test_resolve_folder_tag_creates_when_absent():
+    assert resolve_folder_tag("Enablement", FOLDER_TAGS) == {
+        "kind": "create", "folder": "Enablement", "tag_id": None}
+
+
+def test_resolve_folder_tag_no_folder():
+    for folder in ("", None, "   "):
+        assert resolve_folder_tag(folder, FOLDER_TAGS) == {
+            "kind": "no_folder", "folder": "", "tag_id": None}
+
+
+def test_top_folder_segment():
+    assert top_folder_segment("Work ▸ Customers") == "Work"
+    assert top_folder_segment("Home") == "Home"
+    assert top_folder_segment("") == ""
+    assert top_folder_segment(None) == ""
+
+
+def test_folder_tag_name():
+    assert folder_tag_name(resolve_folder_tag("Home", FOLDER_TAGS)) == "Home"
+    assert folder_tag_name(resolve_folder_tag("Enablement", FOLDER_TAGS)) == "Enablement"
+    assert folder_tag_name({"kind": "ambiguous", "folder": "Home", "tag_id": None}) == ""
+    assert folder_tag_name(resolve_folder_tag("", FOLDER_TAGS)) == ""
+    assert folder_tag_name(None) == ""
+
+
+def test_folder_tag_write_fields():
+    none = {"folderTagId": "", "folderTagCreate": ""}
+    assert folder_tag_write_fields(resolve_folder_tag("Home", FOLDER_TAGS)) == {
+        "folderTagId": "tHome", "folderTagCreate": ""}
+    assert folder_tag_write_fields(resolve_folder_tag("Enablement", FOLDER_TAGS)) == {
+        "folderTagId": "", "folderTagCreate": "Enablement"}
+    assert folder_tag_write_fields({"kind": "ambiguous", "folder": "Home", "tag_id": None}) == none
+    assert folder_tag_write_fields(resolve_folder_tag("", FOLDER_TAGS)) == none
+    assert folder_tag_write_fields(None) == none
+    # An id that does not look like an OmniFocus id never reaches OmniJS source.
+    assert folder_tag_write_fields({"kind": "match", "folder": "Home",
+                                    "tag_id": 'x"); evil("'}) == none
+
+
+def test_kanban_tag_env(monkeypatch):
+    monkeypatch.delenv("KANBAN_TAG", raising=False)
+    assert kanban_tag_env() == "Kanban"
+    monkeypatch.setenv("KANBAN_TAG", "  Board ")
+    assert kanban_tag_env() == "Board"
+    monkeypatch.setenv("KANBAN_TAG", "   ")
+    assert kanban_tag_env() == "Kanban"
+
+
+def test_embed_js_inserts_fragment_as_a_js_string_literal():
+    assert embed_js('"a" + __X__ + "b"', X='const q = "hi";') == \
+        '"a" + "const q = \\"hi\\";" + "b"'
+
+
+def test_omnijs_fragments_encode_the_rule():
+    assert "String(t.status).indexOf('Dropped') === -1" in TAG_TREE_JS
+    assert "in_kanban: !!inK[t.id.primaryKey]" in TAG_TREE_JS
+    # Nested folders resolve to the root-most folder.
+    assert "while (f.parent) f = f.parent;" in TOP_FOLDER_JS
+    # New folder tags are created once per name per run, at the top level.
+    assert "new Tag(nm)" in FOLDER_TAG_WRITE_JS
+    assert "decodeURIComponent(enc)" in FOLDER_TAG_WRITE_JS
+    for js in (TAG_TREE_JS, TOP_FOLDER_JS, FOLDER_TAG_WRITE_JS):
+        assert "removeTag" not in js and "clearTags" not in js

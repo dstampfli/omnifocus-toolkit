@@ -210,6 +210,126 @@ def _positive_int_env(name, default):
     return value
 
 
+# ------------------------------ folder tags ------------------------------
+# One rule for every tool that adds a folder tag (tag_tasks, the reviewer and
+# triage): the tag is named after the project's TOP-LEVEL folder and matched to
+# an existing tag outside the Kanban subtree by leaf name, case-insensitively —
+# the rule sort_project uses for tag_order. It is resolved here in Python, from
+# the tag tree each read returns, so the rule is unit-tested and a preview shows
+# exactly what a write would do.
+
+FOLDER_PATH_SEPARATOR = " ▸ "  # triage's folderPath join: "Outer ▸ Inner"
+_OMNI_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def kanban_tag_env():
+    """KANBAN_TAG, the parent tag of the board lanes (default Kanban). Call it
+    at config-load time, after load_dotenv, like the other env knobs."""
+    return os.environ.get("KANBAN_TAG", "Kanban").strip() or "Kanban"
+
+
+def top_folder_segment(folder_path):
+    """'Work ▸ Customers' -> 'Work'; '' for a project outside any folder."""
+    return (folder_path or "").split(FOLDER_PATH_SEPARATOR)[0].strip()
+
+
+def resolve_folder_tag(folder, tags):
+    """Resolve a top-level folder name to the tag a writer should add.
+
+    `tags` is a read stage's tag tree: [{id, name, parent_id, in_kanban}].
+    Returns {"kind", "folder", "tag_id"}, kind being:
+      match      exactly one non-Kanban tag has this leaf name (at any depth)
+      create     none does; a writer may create a top-level tag named `folder`
+      ambiguous  two or more do; never guess between them
+      no_folder  the project sits outside any folder
+    """
+    folder = (folder or "").strip()
+    if not folder:
+        return {"kind": "no_folder", "folder": "", "tag_id": None}
+    key = folder.casefold()
+    hits = [t for t in tags
+            if not t.get("in_kanban") and (t.get("name") or "").casefold() == key]
+    if len(hits) == 1:
+        return {"kind": "match", "folder": folder, "tag_id": hits[0]["id"]}
+    if hits:
+        return {"kind": "ambiguous", "folder": folder, "tag_id": None}
+    return {"kind": "create", "folder": folder, "tag_id": None}
+
+
+def folder_tag_name(resolution):
+    """The folder tag a write would add, or '' when it adds none."""
+    if resolution and resolution["kind"] in ("match", "create"):
+        return resolution["folder"]
+    return ""
+
+
+def folder_tag_write_fields(resolution):
+    """Per-task fields for the reviewer/triage writes: the matched tag's id
+    (only if it looks like an OmniFocus id) or the folder name to create; both
+    empty when the task gets no folder tag."""
+    if resolution and resolution["kind"] == "match" \
+            and _OMNI_ID.match(resolution["tag_id"] or ""):
+        return {"folderTagId": resolution["tag_id"], "folderTagCreate": ""}
+    if resolution and resolution["kind"] == "create":
+        return {"folderTagId": "", "folderTagCreate": resolution["folder"]}
+    return {"folderTagId": "", "folderTagCreate": ""}
+
+
+# OmniJS helpers spliced into JXA programs with embed_js.
+# tagTree(kanbanName): every non-dropped tag, with in_kanban marking the Kanban
+# parent and all its descendants (never folder-tag candidates).
+TAG_TREE_JS = (
+    "const tagTree = kanbanName => {"
+    "  const k = flattenedTags.byName(kanbanName);"
+    "  const inK = {};"
+    "  if (k) {"
+    "    inK[k.id.primaryKey] = true;"
+    "    (k.flattenedChildren || []).forEach(c => { inK[c.id.primaryKey] = true; });"
+    "  }"
+    "  return flattenedTags"
+    "    .filter(t => t && String(t.status).indexOf('Dropped') === -1)"
+    "    .map(t => ({ id: t.id.primaryKey, name: t.name,"
+    "                 parent_id: t.parent ? t.parent.id.primaryKey : null,"
+    "                 in_kanban: !!inK[t.id.primaryKey] }));"
+    "};"
+)
+# topFolder(project): the root-most folder's name, '' outside any folder. Uses
+# OmniJS parentFolder — JXA container()/folder() return nothing on current
+# OmniFocus.
+TOP_FOLDER_JS = (
+    "const topFolder = p => {"
+    "  let f = p.parentFolder;"
+    "  if (!f) return '';"
+    "  while (f.parent) f = f.parent;"
+    "  return f.name;"
+    "};"
+)
+# folderTagFor(id, enc): the tag a reviewer/triage write adds — the existing tag
+# with that id (null if it vanished since the read), else a new top-level tag
+# named decodeURIComponent(enc), created once per name per run; null when both
+# are empty.
+FOLDER_TAG_WRITE_JS = (
+    "const newFolderTags = {};"
+    "const folderTagFor = (id, enc) => {"
+    "  if (id) return Tag.byIdentifier(id);"
+    "  if (!enc) return null;"
+    "  const nm = decodeURIComponent(enc);"
+    "  const key = nm.toLowerCase();"
+    "  if (!newFolderTags[key]) newFolderTags[key] = new Tag(nm);"
+    "  return newFolderTags[key];"
+    "};"
+)
+
+
+def embed_js(program, **fragments):
+    """Replace each __NAME__ placeholder in a JXA program with `fragment` as a
+    JS string literal, so the JXA side can concatenate it into OmniJS source.
+    The fragments are the trusted constants above, never user text."""
+    for name, fragment in fragments.items():
+        program = program.replace(f"__{name}__", json.dumps(fragment))
+    return program
+
+
 # Extract ONE attachment's bytes via the OmniJS bridge (plain JXA cannot read
 # attachments). Only the task id — a whitelisted OmniFocus identifier — is
 # embedded into the OmniJS source; never free text.
