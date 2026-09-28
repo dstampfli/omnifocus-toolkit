@@ -113,3 +113,154 @@ def test_write_config_skips_failed_skipped_and_fully_tagged_projects():
                           proj("p3", "Cars", "Home", [tk("z", ["tHome"])])], tags)
     assert build_write_config(plans, {"x", "y", "z"}, {"tHome", "tWork", "w2"}) == {
         "creates": [], "projects": []}
+
+
+# --------------------------- run_tag & report ----------------------------
+
+from omnifocus_tagger import (  # noqa: E402
+    READ_TAG_TASKS_JXA,
+    WRITE_TAG_JXA,
+    format_report,
+    parse_args,
+    run_tag,
+)
+
+
+def fake_read(projects, tags=TAGS, missing=()):
+    return lambda names: (projects, tags, list(missing))
+
+
+def recording_apply(calls, failed=()):
+    def apply_fn(cfg):
+        calls.append(cfg)
+        ok = [p["id"] for p in cfg["projects"] if p["id"] not in failed]
+        return ok, list(failed), list(cfg["creates"])
+    return apply_fn
+
+
+def no_apply(cfg):
+    raise AssertionError("no write expected")
+
+
+HOME = [proj("p1", "Finances", "Home", [tk("a", ["tHome"]), tk("b", ["tTodo", "tRev"])]),
+        proj("p2", "Labs", "Enablement", [tk("c"), tk("d")])]
+
+
+def test_run_tag_preview_writes_nothing_and_equals_apply():
+    preview = run_tag(["Finances", "Labs"], read=fake_read(HOME), apply_fn=no_apply)
+    calls = []
+    applied = run_tag(["Finances", "Labs"], apply=True, read=fake_read(HOME),
+                      apply_fn=recording_apply(calls))
+    assert preview["dry_run"] is True and applied["dry_run"] is False
+    assert preview["applied"] == []
+    assert applied["applied"] == ["Finances", "Labs"]
+    assert preview["projects"] == applied["projects"]
+    assert preview["tags_created"] == applied["tags_created"] == ["Enablement"]
+    assert preview["counts"] == applied["counts"] == {
+        "projects": 2, "tagged": 3, "already_tagged": 1, "failed": 0, "missing": 0}
+    assert preview["projects"][0] == {
+        "id": "p1", "name": "Finances", "folder_tag": "Home", "count": 2,
+        "tagged": 1, "already_tagged": 1, "skipped_reason": None}
+    assert calls[0]["projects"][0]["taskIds"] == ["b"]   # To Do/Reviewed task
+
+
+def test_run_tag_second_run_makes_no_write():
+    done = [proj("p1", "Finances", "Home", [tk("a", ["tHome"]), tk("b", ["tHome"])])]
+    result = run_tag(["Finances"], apply=True, read=fake_read(done), apply_fn=no_apply)
+    assert result["counts"]["tagged"] == 0
+    assert result["applied"] == [] and result["tags_created"] == []
+
+
+def test_run_tag_missing_and_partial_write_failure_do_not_block_others():
+    calls = []
+    result = run_tag(["Finances", "Labs", "Ghost"], apply=True,
+                     read=fake_read(HOME, missing=["Ghost"]),
+                     apply_fn=recording_apply(calls, failed=["p2"]))
+    assert result["missing"] == ["Ghost"]
+    assert result["applied"] == ["Finances"]
+    assert result["failed"] == [{"project": "Labs", "reason": "write_error"}]
+    labs = [p for p in result["projects"] if p["name"] == "Labs"][0]
+    assert labs["tagged"] == 0
+    assert result["counts"]["failed"] == 1 and result["counts"]["missing"] == 1
+
+
+def test_run_tag_reports_plan_failures_and_skips():
+    tags = TAGS + [tg("a", "Areas"), tg("h2", "Home", "a")]
+    projects = [proj("p1", "Pets", "Home", [tk("x")]),
+                proj("p2", "Loose", "", [tk("y")]),
+                proj("p3", "Labs", "Enablement", [tk("z")])]
+    result = run_tag(["Pets", "Loose", "Labs"], apply=True,
+                     read=fake_read(projects, tags=tags),
+                     create_missing_tags=False, apply_fn=no_apply)
+    assert result["failed"] == [{"project": "Pets", "reason": "ambiguous_tag"},
+                                {"project": "Labs", "reason": "missing_tag"}]
+    loose = [p for p in result["projects"] if p["name"] == "Loose"][0]
+    assert loose["skipped_reason"] == "no_folder" and loose["folder_tag"] is None
+
+
+def test_run_tag_passes_include_completed_through():
+    projects = [proj("p1", "Cars", "Home", [tk("a"), tk("b", completed=True)])]
+    assert run_tag(["Cars"], read=fake_read(projects))["counts"]["tagged"] == 1
+    assert run_tag(["Cars"], read=fake_read(projects),
+                   include_completed=True)["counts"]["tagged"] == 2
+
+
+def test_run_tag_deduplicates_project_names():
+    seen = []
+
+    def read(names):
+        seen.append(list(names))
+        return HOME[:1], TAGS, []
+    run_tag(["Finances", "Finances"], read=read)
+    assert seen == [["Finances"]]
+
+
+def test_run_tag_empty_projects_reads_nothing():
+    def read(names):
+        raise AssertionError("no read expected")
+    result = run_tag([], read=read, apply_fn=no_apply)
+    assert result["projects"] == [] and result["counts"]["projects"] == 0
+
+
+def test_read_jxa_embeds_helpers_and_flattens_projects():
+    assert "__TAG_TREE_JS__" not in READ_TAG_TASKS_JXA
+    assert "const tagTree" in READ_TAG_TASKS_JXA
+    assert "const topFolder" in READ_TAG_TASKS_JXA
+    assert "proj.flattenedTasks" in READ_TAG_TASKS_JXA
+    assert "folder: topFolder(proj)" in READ_TAG_TASKS_JXA
+
+
+def test_write_jxa_only_adds_and_percent_encodes_new_names():
+    assert "t.addTag(tag)" in WRITE_TAG_JXA
+    for bad in ("removeTag", "clearTags", "moveTags"):
+        assert bad not in WRITE_TAG_JXA
+    assert "encodeURIComponent(n)" in WRITE_TAG_JXA
+    assert "decodeURIComponent" in WRITE_TAG_JXA
+    assert "JSON.stringify(cfg.creates)" not in WRITE_TAG_JXA
+
+
+def test_format_report_preview_and_apply():
+    result = run_tag(["Finances", "Labs", "Ghost"], read=fake_read(HOME, missing=["Ghost"]))
+    out = format_report(result)
+    assert "Would tag 1 of 2 task(s) in Finances with Home (1 already tagged)." in out
+    assert "Would create tag(s): Enablement" in out
+    assert "Projects not found (1): Ghost" in out
+    calls = []
+    out = format_report(run_tag(["Finances"], apply=True, read=fake_read(HOME[:1]),
+                                apply_fn=recording_apply(calls)))
+    assert "Tagged 1 of 2 task(s) in Finances with Home (1 already tagged)." in out
+
+
+def test_format_report_skips_and_failures():
+    tags = TAGS + [tg("a", "Areas"), tg("h2", "Home", "a")]
+    out = format_report(run_tag(["Pets", "Loose"], read=fake_read(
+        [proj("p1", "Pets", "Home", [tk("x")]), proj("p2", "Loose", "", [tk("y")])],
+        tags=tags)))
+    assert "Pets: failed (ambiguous_tag)." in out
+    assert "Loose: skipped (no_folder)." in out
+
+
+def test_parse_args():
+    assert parse_args(["A", "B"]) == (["A", "B"], False, False, True)
+    assert parse_args(["A", "--apply", "--include-completed", "--no-create"]) == (
+        ["A"], True, True, False)

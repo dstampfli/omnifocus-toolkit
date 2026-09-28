@@ -405,3 +405,14 @@ def test_format_report_flags_missing_projects():
     result = {"dry_run": True, "by": "due", "descending": False,
               "projects": [], "applied": [], "missing": ["Ghost"]}
     assert "Ghost" in format_report(result)
+
+
+def test_tag_sort_is_unchanged_by_added_folder_tags():
+    # tag_tasks adds folder tags (Home, Work, ...) that the nightly Kanban
+    # tag_order does not list, so they must not move any task.
+    order = ["Waiting", "To Do", "In Progress", "Done", "Reviewed"]
+    before = [task("a", tags=["Done"]), task("b", tags=["To Do"]),
+              task("c", tags=[]), task("d", tags=["Waiting", "Reviewed"])]
+    after = [{**t, "tags": t["tags"] + ["Home"]} for t in before]
+    assert ids(sort_tasks(before, "tag", tag_order=order)) == \
+        ids(sort_tasks(after, "tag", tag_order=order))

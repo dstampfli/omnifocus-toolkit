@@ -15,9 +15,59 @@ import sys
 
 from dotenv import load_dotenv
 
-from omnifocus_common import resolve_folder_tag
+from omnifocus_common import (
+    TAG_TREE_JS,
+    TOP_FOLDER_JS,
+    embed_js,
+    kanban_tag_env,
+    resolve_folder_tag,
+    run_jxa,
+)
 
 load_dotenv()
+
+# The Kanban parent tag: its subtree (the board lanes) never counts as a folder
+# tag. Same env var as the reviewer and the board.
+KANBAN_TAG = kanban_tag_env()
+
+
+# ------------------------------- read stage -------------------------------
+
+# One OmniJS call: for each named ACTIVE project, its top-level folder and every
+# task in flattenedTasks (action groups and all their descendants) with its tag
+# ids, plus the whole tag tree. Project names that don't resolve go to
+# `missing`. argv[0] = JSON {projectNames: [...], kanbanTag: "..."}.
+READ_TAG_TASKS_JXA = embed_js(r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const omni =
+        "(() => {" +
+        __TAG_TREE_JS__ + __TOP_FOLDER_JS__ +
+        "  const wanted = " + JSON.stringify(cfg.projectNames) + ";" +
+        "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
+        "  const missing = []; const projectsOut = [];" +
+        "  wanted.forEach(nm => {" +
+        "    const proj = flattenedProjects.find(p => p && p.name === nm && p.status === Project.Status.Active);" +
+        "    if (!proj) { missing.push(nm); return; }" +
+        "    const tasksOut = proj.flattenedTasks.filter(t => t).map(t => ({" +
+        "      id: t.id.primaryKey, name: t.name, completed: !!t.completed," +
+        "      dropped: t.taskStatus === Task.Status.Dropped," +
+        "      tag_ids: (t.tags || []).map(x => x.id.primaryKey)" +
+        "    }));" +
+        "    projectsOut.push({ id: proj.id.primaryKey, name: proj.name, folder: topFolder(proj), tasks: tasksOut });" +
+        "  });" +
+        "  return JSON.stringify({ projects: projectsOut, missing: missing, tags: tagTree(kanbanName) });" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+""", TAG_TREE_JS=TAG_TREE_JS, TOP_FOLDER_JS=TOP_FOLDER_JS)
+
+
+def read_tag_tasks(project_names, kanban_tag=KANBAN_TAG):
+    cfg = json.dumps({"projectNames": project_names, "kanbanTag": kanban_tag})
+    payload = run_jxa(READ_TAG_TASKS_JXA, cfg)
+    return payload["projects"], payload["tags"], payload["missing"]
 
 
 # ------------------------------- plan stage -------------------------------
@@ -83,3 +133,160 @@ def build_write_config(plans, valid_task_ids, valid_tag_ids):
             projects.append({"id": p["id"], "tagId": "",
                              "createIndex": create_index[key], "taskIds": task_ids})
     return {"creates": creates, "projects": projects}
+
+
+# ------------------------------- apply stage -------------------------------
+
+# One OmniJS call for every project. Tags to create are made first, at the top
+# level; then each project's tasks get addTag inside its own try, so one
+# failing project never stops the others. Tags are only ever ADDED. Project,
+# tag and task identifiers were whitelisted in Python; the only free text, the
+# names to create, is percent-encoded here (encodeURIComponent output cannot
+# break out of a JS string literal) and decoded inside OmniJS.
+WRITE_TAG_JXA = r"""
+function run(argv) {
+    const cfg = JSON.parse(argv[0]);
+    const of = Application('OmniFocus');
+    const creates = cfg.creates.map(n => "\"" + encodeURIComponent(n) + "\"").join(",");
+    const omni =
+        "(() => {" +
+        "  const createNames = [" + creates + "].map(decodeURIComponent);" +
+        "  const wanted = " + JSON.stringify(cfg.projects) + ";" +
+        "  const newTags = []; const created = [];" +
+        "  const applied = []; const failed = [];" +
+        "  createNames.forEach(nm => {" +
+        "    try { const tg = new Tag(nm); newTags.push(tg); created.push(tg.name); }" +
+        "    catch (e) { newTags.push(null); }" +
+        "  });" +
+        "  wanted.forEach(p => {" +
+        "    try {" +
+        "      const tag = p.createIndex >= 0 ? newTags[p.createIndex] : Tag.byIdentifier(p.tagId);" +
+        "      if (!tag) { failed.push(p.id); return; }" +
+        "      p.taskIds.forEach(tid => {" +
+        "        const t = Task.byIdentifier(tid);" +
+        "        if (!t) throw new Error('task not found: ' + tid);" +
+        "        t.addTag(tag);" +
+        "      });" +
+        "      applied.push(p.id);" +
+        "    } catch (e) { failed.push(p.id); }" +
+        "  });" +
+        "  return JSON.stringify({ applied: applied, failed: failed, created: created });" +
+        "})()";
+    return of.evaluateJavascript(omni);
+}
+"""
+
+
+def apply_tagging(cfg):
+    payload = run_jxa(WRITE_TAG_JXA, json.dumps(cfg))
+    return (payload.get("applied", []), payload.get("failed", []),
+            payload.get("created", []))
+
+
+# --------------------------- pipeline & reporting ---------------------------
+
+def run_tag(projects, *, apply=False, include_completed=False,
+            create_missing_tags=True, read=read_tag_tasks, apply_fn=apply_tagging):
+    """Tag every task in the named project(s) with its project's top-level
+    folder and return a structured, JSON-serializable result. Dry-run by
+    default; the preview and the write come from the same plan."""
+    names = list(dict.fromkeys(projects))  # de-duplicate, keep order
+    if names:
+        read_projects, tags, missing = read(names)
+    else:
+        read_projects, tags, missing = [], [], []
+    plans = plan_tagging(read_projects, tags, include_completed, create_missing_tags)
+    valid_task_ids = {t["id"] for p in read_projects for t in p["tasks"]}
+    cfg = build_write_config(plans, valid_task_ids, {t["id"] for t in tags})
+    to_write = {p["id"]: len(p["taskIds"]) for p in cfg["projects"]}
+
+    if not apply:
+        done_ids, write_failed, created = set(to_write), [], list(cfg["creates"])
+    elif cfg["projects"]:
+        applied_ids, write_failed, created = apply_fn(cfg)
+        done_ids = set(applied_ids)
+    else:
+        done_ids, write_failed, created = set(), [], []
+
+    write_failed = set(write_failed)
+    failed = [{"project": p["name"], "reason": p["failure"]}
+              for p in plans if p["failure"]]
+    failed += [{"project": p["name"], "reason": "write_error"}
+               for p in plans if p["id"] in write_failed]
+    out_projects = [
+        {"id": p["id"], "name": p["name"], "folder_tag": p["folder_tag"],
+         "count": p["count"],
+         "tagged": to_write.get(p["id"], 0) if p["id"] in done_ids else 0,
+         "already_tagged": p["already_tagged"],
+         "skipped_reason": p["skipped_reason"]}
+        for p in plans
+    ]
+    applied = [p["name"] for p in plans if p["id"] in done_ids] if apply else []
+    return {
+        "dry_run": not apply,
+        "projects": out_projects,
+        "tags_created": created,
+        "applied": applied,
+        "failed": failed,
+        "missing": list(missing),
+        "counts": {"projects": len(out_projects),
+                   "tagged": sum(p["tagged"] for p in out_projects),
+                   "already_tagged": sum(p["already_tagged"] for p in out_projects),
+                   "failed": len(failed), "missing": len(missing)},
+    }
+
+
+def format_report(result):
+    lines = []
+    verb = "Would tag" if result["dry_run"] else "Tagged"
+    reasons = {f["project"]: f["reason"] for f in result["failed"]}
+    for p in result["projects"]:
+        if p["skipped_reason"]:
+            lines.append(f"{p['name']}: skipped ({p['skipped_reason']}).")
+        elif p["name"] in reasons:
+            lines.append(f"{p['name']}: failed ({reasons[p['name']]}).")
+        else:
+            lines.append(f"{verb} {p['tagged']} of {p['count']} task(s) in "
+                         f"{p['name']} with {p['folder_tag']} "
+                         f"({p['already_tagged']} already tagged).")
+    if result["tags_created"]:
+        head = "Would create tag(s)" if result["dry_run"] else "Created tag(s)"
+        lines.append("")
+        lines.append(f"{head}: {', '.join(result['tags_created'])}")
+    if result["missing"]:
+        lines.append("")
+        lines.append(f"Projects not found ({len(result['missing'])}): "
+                     f"{', '.join(result['missing'])}")
+    if not result["projects"] and not result["missing"]:
+        lines.append("Nothing to tag.")
+    return "\n".join(lines)
+
+
+# ----------------------------------- CLI -----------------------------------
+
+_FLAGS = ("--apply", "--include-completed", "--no-create")
+
+
+def parse_args(argv):
+    projects = [a for a in argv if a not in _FLAGS]
+    return (projects, "--apply" in argv, "--include-completed" in argv,
+            "--no-create" not in argv)
+
+
+USAGE = ("usage: omnifocus_tagger.py PROJECT [PROJECT ...] [--apply] "
+         "[--include-completed] [--no-create]")
+
+
+def main(argv):
+    projects, apply, include_completed, create_missing_tags = parse_args(argv)
+    if not projects:
+        print(USAGE, file=sys.stderr)
+        return 2
+    result = run_tag(projects, apply=apply, include_completed=include_completed,
+                     create_missing_tags=create_missing_tags)
+    print(format_report(result))
+    return 1 if (result["missing"] or result["failed"]) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
