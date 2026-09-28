@@ -19,8 +19,16 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from omnifocus_common import (
+    FOLDER_TAG_WRITE_JS,
+    TAG_TREE_JS,
+    TOP_FOLDER_JS,
     build_task_content,
+    embed_js,
     fetch_attachment_b64,
+    folder_tag_name,
+    folder_tag_write_fields,
+    kanban_tag_env,
+    resolve_folder_tag,
     run_jxa,
     strip_medium_promo,
     _positive_int_env,
@@ -36,7 +44,7 @@ import os  # noqa: E402  (after load_dotenv so .env is present)
 def _load_config():
     model = os.environ.get("MODEL", "claude-sonnet-5")
     tag = os.environ.get("REVIEW_TAG", "Reviewed").strip() or "Reviewed"
-    kanban = os.environ.get("KANBAN_TAG", "Kanban").strip() or "Kanban"
+    kanban = kanban_tag_env()
     fetches = _positive_int_env("WEB_FETCH_MAX_USES", "3")
     max_att = _positive_int_env("MAX_ATTACHMENT_BYTES", "10485760")
     max_note = _positive_int_env("MAX_NOTE_CHARS", "4000")
@@ -121,10 +129,11 @@ def parse_read_result(stdout: str) -> Tuple[list, list]:
 # case-sensitive match; guards a stray top-level Reviewed from before the
 # reparent under Kanban). With force both skips are off and every open task is
 # returned, so an already-reviewed task can be re-enriched (e.g. after a
-# summary-format change). Each task also carries `folder`, the name of the
-# folder its project sits directly in ('' at the top level), for the report.
+# summary-format change). Each task also carries `folder`, the project's
+# TOP-LEVEL folder ('' outside any folder), and the payload carries the tag
+# tree, so Python can resolve the folder tag (omnifocus_common.resolve_folder_tag).
 # argv[0] = JSON {projectNames: [...], reviewTag: "...", kanbanTag: "...", force: bool}.
-READ_TASKS_JXA = r"""
+READ_TASKS_JXA = embed_js(r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
     const of = Application('OmniFocus');
@@ -133,7 +142,7 @@ function run(argv) {
     const kanbanJson = JSON.stringify(cfg.kanbanTag);
     const forceJson = JSON.stringify(!!cfg.force);
     const omni =
-        "(() => {" +
+        "(() => {" + __TAG_TREE_JS__ + __TOP_FOLDER_JS__ +
         "  const wanted = " + namesJson + ";" +
         "  const reviewTag = " + tagJson + ";" +
         "  const kanbanName = " + kanbanJson + ";" +
@@ -149,7 +158,7 @@ function run(argv) {
         "  wanted.forEach(nm => {" +
         "    const proj = flattenedProjects.find(p => p && p.name === nm && p.status === Project.Status.Active);" +
         "    if (!proj) { unresolved.push(nm); return; }" +
-        "    const folder = proj.parentFolder ? proj.parentFolder.name : '';" +
+        "    const folder = topFolder(proj);" +
         "    proj.flattenedTasks.forEach(t => {" +
         "      if (!t) return;" +
         "      if (t.completed || t.taskStatus === Task.Status.Dropped) return;" +
@@ -167,17 +176,24 @@ function run(argv) {
         "      tasksOut.push({ id: t.id.primaryKey, name: t.name, note: t.note || '', attachments: meta, folder: folder });" +
         "    });" +
         "  });" +
-        "  return JSON.stringify({ tasks: tasksOut, unresolved: unresolved });" +
+        "  return JSON.stringify({ tasks: tasksOut, unresolved: unresolved, tags: tagTree(kanbanName) });" +
         "})()";
     return of.evaluateJavascript(omni);
 }
-"""
+""", TAG_TREE_JS=TAG_TREE_JS, TOP_FOLDER_JS=TOP_FOLDER_JS)
 
 
 def read_project_tasks(project_names, review_tag, kanban_tag, force=False):
     cfg = json.dumps({"projectNames": project_names, "reviewTag": review_tag,
                       "kanbanTag": kanban_tag, "force": bool(force)})
     payload = run_jxa(READ_TASKS_JXA, cfg)
+    tags = payload.get("tags", [])
+    resolved = {}
+    for task in payload["tasks"]:
+        folder = task.get("folder", "")
+        if folder not in resolved:
+            resolved[folder] = resolve_folder_tag(folder, tags)
+        task["folder_tag"] = resolved[folder]
     return payload["tasks"], payload["unresolved"]
 
 
@@ -327,7 +343,8 @@ def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
         original = strip_summary_blocks(strip_medium_promo(task.get("note", ""))).strip()
         body = f"{SUMMARY_MARKER}\n{_stamp(now)}\n{summary}"
         note = f"{original}\n\n{body}" if original else body
-        writes.append({"taskId": task["id"], "newTitle": title, "note": note})
+        writes.append({"taskId": task["id"], "newTitle": title, "note": note,
+                       **folder_tag_write_fields(task.get("folder_tag"))})
     return {"writes": writes, "reviewTag": review_tag, "kanbanTag": kanban_tag}
 
 
@@ -352,28 +369,29 @@ def build_write_config(reviewed, review_tag, kanban_tag="Kanban", now=None):
 # re-reviewed under --force while it sits in To Do / In Progress / Waiting /
 # Done keeps that lane instead of ending up in two lanes.
 #
-# Every written task also gets a tag named after the folder its project sits
-# directly in (Personal, Home, Work, ...), looked up live from OmniFocus on each
-# run so renamed or new folders need no config; a project outside any folder
-# gets no folder tag. The name comes from OmniFocus inside OmniJS, so no folder
-# text reaches the source. The tag is found by name outside the Kanban subtree
-# (a top-level tag first), or created at the top level if none exists.
-WRITE_JXA = r"""
+# Every written task also gets its project's folder tag, resolved in Python by
+# omnifocus_common.resolve_folder_tag (top-level folder, case-insensitive leaf
+# name, never a Kanban tag): each row carries the matched tag's id, or the
+# percent-encoded name of a top-level tag to create, or neither (no folder, or
+# an ambiguous name). folderTagFor creates a missing tag once per run.
+WRITE_JXA = embed_js(r"""
 function run(argv) {
     const cfg = JSON.parse(argv[0]);
     const of = Application('OmniFocus');
 
-    // Each row: [taskId, encodeURIComponent(title), encodeURIComponent(note)].
+    // Each row: [taskId, enc(title), enc(note), folderTagId, enc(folderTagCreate)].
     // encodeURIComponent output contains no ", \\, or newlines, so wrapping it
     // in double quotes yields a safe JS string literal.
     const rows = cfg.writes.map(w =>
         "[" + JSON.stringify(w.taskId) + ",\"" +
         encodeURIComponent(w.newTitle) + "\",\"" +
-        encodeURIComponent(w.note) + "\"]"
+        encodeURIComponent(w.note) + "\"," +
+        JSON.stringify(w.folderTagId || "") + ",\"" +
+        encodeURIComponent(w.folderTagCreate || "") + "\"]"
     ).join(",");
 
     const omni =
-        "(() => {" +
+        "(() => {" + __FOLDER_TAG_WRITE_JS__ +
         "  const writes = [" + rows + "];" +
         "  const tagName = " + JSON.stringify(cfg.reviewTag) + ";" +
         "  const kanbanName = " + JSON.stringify(cfg.kanbanTag) + ";" +
@@ -387,15 +405,6 @@ function run(argv) {
         "  const kanbanIds = {};" +
         "  kanbanIds[parent.id.primaryKey] = true;" +
         "  (parent.flattenedChildren || []).forEach(c => { kanbanIds[c.id.primaryKey] = true; });" +
-        "  const folderTags = {};" +
-        "  const folderTag = nm => {" +
-        "    if (!folderTags[nm]) {" +
-        "      folderTags[nm] = tags.byName(nm)" +
-        "        || flattenedTags.find(x => x.name === nm && !kanbanIds[x.id.primaryKey])" +
-        "        || new Tag(nm);" +
-        "    }" +
-        "    return folderTags[nm];" +
-        "  };" +
         "  const applied = []; const failed = [];" +
         "  writes.forEach(r => {" +
         "    const t = Task.byIdentifier(r[0]);" +
@@ -405,9 +414,7 @@ function run(argv) {
         "      t.note = decodeURIComponent(r[2]);" +   // preserves attachments
         "      const inLane = (t.tags || []).some(x => kanbanIds[x.id.primaryKey]);" +
         "      if (!inLane) t.addTag(tag);" +
-        "      const proj = t.containingProject;" +
-        "      const folder = proj && proj.parentFolder;" +
-        "      if (folder) t.addTag(folderTag(folder.name));" +
+        "      const ft = folderTagFor(r[3], r[4]); if (ft) t.addTag(ft);" +
         "      applied.push(t.name);" +
         "    } catch (e) { failed.push(r[0]); }" +
         "  });" +
@@ -416,7 +423,7 @@ function run(argv) {
 
     return of.evaluateJavascript(omni);
 }
-"""
+""", FOLDER_TAG_WRITE_JS=FOLDER_TAG_WRITE_JS)
 
 
 def apply_enrichments(reviewed, review_tag, kanban_tag):
@@ -441,6 +448,15 @@ def apply_enrichments(reviewed, review_tag, kanban_tag):
 
 # --------------------------- reporting & CLI --------------------------------
 
+def _folder_tag_line(resolution):
+    name = folder_tag_name(resolution)
+    if name:
+        return f"Tag: {name}"
+    if resolution and resolution["kind"] == "ambiguous":
+        return f"Tag: \u2014 (ambiguous: {resolution['folder']})"
+    return None
+
+
 def format_report(reviewed, failed, unresolved, applied_names, dry_run):
     lines = []
     if reviewed:
@@ -448,8 +464,9 @@ def format_report(reviewed, failed, unresolved, applied_names, dry_run):
         lines.append(f"{header} {len(reviewed)} task(s):")
         for task, enrichment in reviewed:
             lines.append(f"  * {task['name']}  ->  {enrichment.new_title}")
-            if task.get("folder"):
-                lines.append(f"      Tag: {task['folder']}")
+            tag_line = _folder_tag_line(task.get("folder_tag"))
+            if tag_line:
+                lines.append(f"      {tag_line}")
             for line in enrichment.summary.splitlines():
                 lines.append(f"      {line}")
     if failed:
@@ -517,7 +534,10 @@ def run_review(projects, apply=False, *, read=read_project_tasks,
         "dry_run": not apply,
         "reviewed": [{"id": t["id"], "old_name": t["name"],
                       "new_title": e.new_title, "summary": e.summary,
-                      "folder_tag": t.get("folder", "")}
+                      "folder_tag": folder_tag_name(t.get("folder_tag")),
+                      "folder_tag_issue": ("ambiguous_tag"
+                                           if (t.get("folder_tag") or {}).get("kind") == "ambiguous"
+                                           else None)}
                      for t, e in reviewed],
         "applied": applied_names,
         "failed": [{"id": t["id"], "name": t["name"], "error": err}

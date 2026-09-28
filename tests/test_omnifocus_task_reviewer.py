@@ -525,33 +525,82 @@ def test_run_review_force_reaches_read():
     assert seen["force"] is False
 
 
-def test_read_tasks_jxa_returns_project_folder():
-    assert "proj.parentFolder ? proj.parentFolder.name : ''" in READ_TASKS_JXA
+from omnifocus_common import resolve_folder_tag  # noqa: E402
+
+_FT_TAGS = [{"id": "tHome", "name": "Home", "parent_id": None, "in_kanban": False}]
+
+
+def test_read_tasks_jxa_returns_top_folder_and_tag_tree():
+    assert "const folder = topFolder(proj);" in READ_TASKS_JXA
     assert "folder: folder" in READ_TASKS_JXA
+    assert "tags: tagTree(kanbanName)" in READ_TASKS_JXA
+    assert "__TAG_TREE_JS__" not in READ_TASKS_JXA
 
 
-def test_write_jxa_tags_task_with_its_project_folder():
-    # The folder is resolved live in OmniJS (no hard-coded list), a folderless
-    # project adds nothing, and a folder tag never resolves to a Kanban lane.
-    assert "const folder = proj && proj.parentFolder;" in WRITE_JXA
-    assert "if (folder) t.addTag(folderTag(folder.name));" in WRITE_JXA
-    assert "!kanbanIds[x.id.primaryKey]" in WRITE_JXA
+def test_read_skips_only_kanban_and_review_tags():
+    # A task carrying only a folder tag (Home) must still be reviewed: the only
+    # tag-based skips are the Kanban subtree and the review tag.
+    skips = [ln.strip() for ln in READ_TASKS_JXA.splitlines()
+             if "ttags" in ln and "return;" in ln]
+    assert skips == [
+        '"      if (!force && ttags.some(x => kanbanIds[x.id.primaryKey])) return;" +',
+        '"      if (!force && ttags.map(x => x.name).indexOf(reviewTag) !== -1) return;" +',
+    ]
+
+
+def test_read_project_tasks_resolves_each_tasks_folder_tag(monkeypatch):
+    import omnifocus_task_reviewer as m
+
+    def fake_run_jxa(prog, cfg):
+        return {"tasks": [{"id": "t1", "name": "a", "note": "", "attachments": [],
+                           "folder": "Home"},
+                          {"id": "t2", "name": "b", "note": "", "attachments": [],
+                           "folder": ""}],
+                "unresolved": [], "tags": _FT_TAGS}
+    monkeypatch.setattr(m, "run_jxa", fake_run_jxa)
+    tasks, _ = m.read_project_tasks(["P"], "Reviewed", "Kanban")
+    assert tasks[0]["folder_tag"] == {"kind": "match", "folder": "Home", "tag_id": "tHome"}
+    assert tasks[1]["folder_tag"]["kind"] == "no_folder"
+
+
+def test_build_write_config_carries_the_folder_tag():
+    task, e = _rv()
+    match = {**task, "folder_tag": resolve_folder_tag("Home", _FT_TAGS)}
+    create = {**task, "folder_tag": resolve_folder_tag("Work", _FT_TAGS)}
+    vague = {**task, "folder_tag": {"kind": "ambiguous", "folder": "Home", "tag_id": None}}
+    w = build_write_config([(match, e), (create, e), (vague, e), (task, e)],
+                           "Reviewed")["writes"]
+    assert [(x["folderTagId"], x["folderTagCreate"]) for x in w] == [
+        ("tHome", ""), ("", "Work"), ("", ""), ("", "")]
+
+
+def test_write_jxa_adds_folder_tag_via_shared_helper():
+    assert "const folderTagFor" in WRITE_JXA
+    assert "const ft = folderTagFor(r[3], r[4]); if (ft) t.addTag(ft);" in WRITE_JXA
+    assert "encodeURIComponent(w.folderTagCreate" in WRITE_JXA
+    assert "parentFolder" not in WRITE_JXA      # resolved in Python now
     for name in ("Personal", "Home", "Enablement", "Work"):
         assert name not in WRITE_JXA
 
 
-def test_format_report_shows_folder_tag_only_when_foldered():
+def test_format_report_shows_folder_tag_line():
     task, e = _rv()
-    assert "Tag: Home" in format_report([({**task, "folder": "Home"}, e)], [], [], [], dry_run=True)
+    home = {**task, "folder_tag": resolve_folder_tag("Home", _FT_TAGS)}
+    vague = {**task, "folder_tag": {"kind": "ambiguous", "folder": "Home", "tag_id": None}}
+    assert "Tag: Home" in format_report([(home, e)], [], [], [], dry_run=True)
+    assert "Tag: \u2014 (ambiguous: Home)" in format_report([(vague, e)], [], [], [], dry_run=True)
     assert "Tag:" not in format_report([(task, e)], [], [], [], dry_run=True)
 
 
-def test_run_review_reports_folder_tag():
-    task = {**_tk("t1", "old"), "folder": "Work"}
+def test_run_review_reports_folder_tag_and_issue():
+    task = {**_tk("t1", "old"), "folder_tag": resolve_folder_tag("Work", _FT_TAGS)}
+    vague = {**_tk("t2", "old2"),
+             "folder_tag": {"kind": "ambiguous", "folder": "Home", "tag_id": None}}
     result = run_review(
         ["P"], apply=False,
-        read=lambda projs, rt, kt, force=False: ([task], []),
-        review=lambda tasks: ([(task, _enr(title="New"))], []),
+        read=lambda projs, rt, kt, force=False: ([task, vague], []),
+        review=lambda tasks: ([(task, _enr(title="New")), (vague, _enr(title="N2"))], []),
         apply_fn=lambda rv, rt, kt: ([], []),
     )
-    assert result["reviewed"][0]["folder_tag"] == "Work"
+    assert [(r["folder_tag"], r["folder_tag_issue"]) for r in result["reviewed"]] == [
+        ("Work", None), ("", "ambiguous_tag")]
