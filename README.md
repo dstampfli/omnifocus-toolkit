@@ -9,7 +9,9 @@ AI-assisted automation for **OmniFocus**, powered by the Claude API:
 - **Project sorter** — reorder a project's tasks by any of the eight keys
   OmniFocus sorts by natively, or by a custom tag priority order (no API call,
   no tokens).
-- **MCP server** — expose all three tools to Claude Desktop / Cowork so a
+- **Folder tagger** — tag every task in a project with its top-level folder
+  name (Personal, Home, Work, …). Additive only; no API call, no tokens.
+- **MCP server** — expose all four tools to Claude Desktop / Cowork so a
   scheduled agent can run them for you.
 - **Omni Automation plug-ins** — an OmniFocus Kanban board with a `Reviewed`
   lane, and an OmniOutliner strikethrough toggle. No AI, no API key.
@@ -178,6 +180,29 @@ Behavior worth knowing:
   matching is case-insensitive and by leaf name (so `--tag Reviewed` matches a
   nested `Kanban ▸ Reviewed`). Tasks with none of the listed tags sort last.
 
+## Folder tagger (`omnifocus_tagger.py`)
+
+Adds each project's **top-level folder** name as a tag to every task in the
+project that doesn't already have it — a project in `Work ▸ Customers` tags its
+tasks `Work`. Action groups and all their subtasks are included; completed and
+dropped tasks only with `--include-completed`. The tag is matched to an existing
+one by name, case-insensitively and at any depth of the tag tree (never a
+`Kanban` lane); if none exists it is created at the top level (`--no-create`
+reports it instead). If two tags share the name, the project is reported as
+ambiguous and left alone.
+
+It only ever **adds** tags: Kanban lanes, `Reviewed` and every other tag stay.
+A task later moved to another folder gets the new folder's tag and keeps the old
+one.
+
+```bash
+uv run python omnifocus_tagger.py "Finances"                 # dry-run
+uv run python omnifocus_tagger.py "Finances" "Cars" --apply  # write
+```
+
+The task reviewer and Inbox triage apply the same rule to the tasks they write,
+so reviewed and triaged tasks pick up their folder tag right away.
+
 ## Kanban board (`omnifocus_kanban_board.py`)
 
 A local drag-and-drop board over the same `Kanban` tag lanes the [Kanban plug-in](omnifocus_kanban_plugin/README.md) uses (`Reviewed → To Do → In Progress → Waiting → Done`). Each column is one lane tag; every open task carrying a lane tag appears as a card, across all projects. The task reviewer files each task it enriches into the `Reviewed` lane, so new material enters the board there. Dropping a card on another column re-tags the task exactly like the plug-in's actions do (remove every lane tag, add the target), so the board, the plug-in, and the task reviewer stay in agreement.
@@ -216,6 +241,10 @@ Tools:
   or by `tag` (pass `tag_order`, a priority-ordered list of tag names); with
   `apply=true`, write the new order. Makes no API call, so it is fast regardless
   of project size.
+- `tag_tasks(projects, apply=false, include_completed=false, create_missing_tags=true)`
+  — add each project's top-level folder name as a tag to every task in the
+  named project(s); with `apply=true`, write the tags. Additive only, no API
+  call, so every project fits in one call; re-running reports `tagged: 0`.
 - `list_projects()` — read-only list of your active projects (id, name, folder
   path, description), so an agent can discover project names dynamically (e.g. to
   fan `review_tasks` out over every active project).
