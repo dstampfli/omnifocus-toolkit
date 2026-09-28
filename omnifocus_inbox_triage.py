@@ -11,7 +11,20 @@ import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from omnifocus_common import build_task_content, fetch_attachment_b64, media_type_for, _positive_int_env
+from omnifocus_common import (
+    FOLDER_TAG_WRITE_JS,
+    TAG_TREE_JS,
+    build_task_content,
+    embed_js,
+    fetch_attachment_b64,
+    folder_tag_name,
+    folder_tag_write_fields,
+    kanban_tag_env,
+    media_type_for,
+    resolve_folder_tag,
+    top_folder_segment,
+    _positive_int_env,
+)
 from omnifocus_x import XPostFetcher
 
 # Load a local .env (if present) so ANTHROPIC_API_KEY and the settings below can
@@ -62,6 +75,10 @@ def _load_config():
     X_BEARER_TOKEN,
     X_FETCH_MAX_USES,
 ) = _load_config()
+
+# The Kanban parent tag, whose subtree never counts as a folder tag (same env
+# var as the reviewer and the board).
+KANBAN_TAG = kanban_tag_env()
 # --------------------------------------------------------------------------
 
 
@@ -120,8 +137,8 @@ def active_projects(projects: list) -> list:
     ]
 
 
-READ_JXA = r"""
-function run() {
+READ_JXA = embed_js(r"""
+function run(argv) {
     const of = Application('OmniFocus');
     of.includeStandardAdditions = true;
     const ofDoc = of.defaultDocument;
@@ -183,6 +200,19 @@ function run() {
         folderMap = JSON.parse(of.evaluateJavascript(folderScript));
     } catch (e) { folderMap = {}; }
 
+    // The tag tree (for the folder tag a moved task gets) is OmniJS-only too.
+    // On failure report null, never [], so Python adds no folder tag rather
+    // than concluding no tags exist and creating duplicates.
+    let tags = null;
+    try {
+        const kanbanName = JSON.parse(argv[0]).kanbanTag;
+        const tagScript =
+            "(() => {" + __TAG_TREE_JS__ +
+            "  return JSON.stringify(tagTree(" + JSON.stringify(kanbanName) + "));" +
+            "})()";
+        tags = JSON.parse(of.evaluateJavascript(tagScript));
+    } catch (e) { tags = null; }
+
     const projects = [];
     const projs = ofDoc.flattenedProjects();
     for (let i = 0; i < projs.length; i++) {
@@ -205,14 +235,25 @@ function run() {
         });
     }
 
-    return JSON.stringify({ items: items, projects: projects });
+    return JSON.stringify({ items: items, projects: projects, tags: tags });
 }
-"""
+""", TAG_TREE_JS=TAG_TREE_JS)
+
+
+def attach_folder_tags(projects, tags):
+    """Give each project the folder tag its moved tasks get: its top-level
+    folder resolved against the tag tree. None when the tag tree could not be
+    read, so nothing is guessed or created."""
+    for p in projects:
+        p["folder_tag"] = (None if tags is None else resolve_folder_tag(
+            top_folder_segment(p.get("folderPath", "")), tags))
+    return projects
 
 
 def read_omnifocus() -> Tuple[list, list]:
     result = subprocess.run(
-        ["osascript", "-l", "JavaScript", "-e", READ_JXA],
+        ["osascript", "-l", "JavaScript", "-e", READ_JXA,
+         json.dumps({"kanbanTag": KANBAN_TAG})],
         capture_output=True,
         text=True,
     )
@@ -220,8 +261,10 @@ def read_omnifocus() -> Tuple[list, list]:
         print("osascript (read) failed:", file=sys.stderr)
         print(result.stderr.strip(), file=sys.stderr)
         raise SystemExit(1)
-    items, projects = parse_read_result(result.stdout.strip())
-    return items, active_projects(projects)
+    stdout = result.stdout.strip()
+    items, projects = parse_read_result(stdout)
+    projects = active_projects(projects)
+    return items, attach_folder_tags(projects, json.loads(stdout).get("tags"))
 
 
 # ----------------------------- classify stage -----------------------------
@@ -341,11 +384,14 @@ def classify_in_batches(items, projects, chunk_size=CHUNK_SIZE):
 
 # ------------------------------- apply stage -------------------------------
 
-def build_apply_config(to_move: List[Decision]) -> dict:
-    return {"moves": [{"taskId": d.item_id, "projectId": d.project_id} for d in to_move]}
+def build_apply_config(to_move: List[Decision], folder_tags=None) -> dict:
+    folder_tags = folder_tags or {}
+    return {"moves": [{"taskId": d.item_id, "projectId": d.project_id,
+                       **folder_tag_write_fields(folder_tags.get(d.project_id))}
+                      for d in to_move]}
 
 
-WRITE_JXA = r"""
+WRITE_JXA = embed_js(r"""
 function run(argv) {
     // Move each task into its project via the Omni Automation (OmniJS) bridge.
     // Setting `assignedContainer` from JXA only marks a pending assignment and
@@ -357,30 +403,40 @@ function run(argv) {
     // embedded into the OmniJS source. Embed IDS ONLY here; never interpolate
     // task names, notes, or other free text into this program (JSON.stringify
     // does not escape U+2028/U+2029, so free text could break out of the source).
+    // Each move row also carries the project's folder tag — a whitelisted tag
+    // id or the percent-encoded name of a top-level tag to create — added after
+    // the move; a folder-tag failure never fails the move (the next tag_tasks
+    // run fills it in).
     const of = Application('OmniFocus');
-    const movesJson = JSON.stringify(JSON.parse(argv[0]).moves);
+    const rows = JSON.parse(argv[0]).moves.map(m =>
+        "[" + JSON.stringify(m.taskId) + "," + JSON.stringify(m.projectId) + "," +
+        JSON.stringify(m.folderTagId || "") + ",\"" +
+        encodeURIComponent(m.folderTagCreate || "") + "\"]"
+    ).join(",");
     const omni =
-        "(() => {" +
-        "  const moves = " + movesJson + ";" +
+        "(() => {" + __FOLDER_TAG_WRITE_JS__ +
+        "  const moves = [" + rows + "];" +
         "  const moved = [];" +
         "  const failed = [];" +
         "  moves.forEach(m => {" +
-        "    const task = inbox.find(t => t.id.primaryKey === m.taskId)" +
-        "              || flattenedTasks.find(t => t.id.primaryKey === m.taskId);" +
-        "    const proj = flattenedProjects.find(p => p.id.primaryKey === m.projectId);" +
-        "    if (!task || !proj) { failed.push(m.taskId); return; }" +
-        "    try { moveTasks([task], proj.ending); moved.push(task.name); }" +
-        "    catch (e) { failed.push(m.taskId); }" +
+        "    const task = inbox.find(t => t.id.primaryKey === m[0])" +
+        "              || flattenedTasks.find(t => t.id.primaryKey === m[0]);" +
+        "    const proj = flattenedProjects.find(p => p.id.primaryKey === m[1]);" +
+        "    if (!task || !proj) { failed.push(m[0]); return; }" +
+        "    try { moveTasks([task], proj.ending); }" +
+        "    catch (e) { failed.push(m[0]); return; }" +
+        "    try { const ft = folderTagFor(m[2], m[3]); if (ft) task.addTag(ft); } catch (e) {}" +
+        "    moved.push(task.name);" +
         "  });" +
         "  return JSON.stringify({ moved: moved, failed: failed });" +
         "})()";
     return of.evaluateJavascript(omni);
 }
-"""
+""", FOLDER_TAG_WRITE_JS=FOLDER_TAG_WRITE_JS)
 
 
-def apply_moves(to_move: List[Decision]) -> Tuple[list, list]:
-    cfg = json.dumps(build_apply_config(to_move))
+def apply_moves(to_move: List[Decision], folder_tags=None) -> Tuple[list, list]:
+    cfg = json.dumps(build_apply_config(to_move, folder_tags))
     result = subprocess.run(
         ["osascript", "-l", "JavaScript", "-e", WRITE_JXA, cfg],
         capture_output=True,
@@ -440,20 +496,22 @@ def format_report(to_move, to_leave, items, dry_run, failed_ids=None):
 def _triage_pipeline(apply, read, classify, apply_fn):
     """Shared read -> classify -> partition -> (optional) apply.
 
-    Returns (items, to_move, to_leave, failed_ids) — the raw pieces both the
-    CLI report and the structured result are built from. Skips classification
+    Returns (items, to_move, to_leave, failed_ids, folder_tags) — the raw pieces
+    both the CLI report and the structured result are built from; folder_tags
+    maps project id -> the folder tag its moved tasks get. Skips classification
     entirely when the inbox is empty (no wasted API call)."""
     items, projects = read()
+    folder_tags = {p["id"]: p.get("folder_tag") for p in projects}
     if not items:
-        return items, [], [], []
+        return items, [], [], [], folder_tags
     classification = classify(items, projects)
     item_ids = [i["id"] for i in items]
     project_ids = [p["id"] for p in projects]
     to_move, to_leave = partition_decisions(classification.decisions, item_ids, project_ids)
     failed_ids = []
     if apply and to_move:
-        _, failed_ids = apply_fn(to_move)
-    return items, to_move, to_leave, failed_ids
+        _, failed_ids = apply_fn(to_move, folder_tags)
+    return items, to_move, to_leave, failed_ids, folder_tags
 
 
 def _decision_dict(d, names):
@@ -472,10 +530,13 @@ def run_triage(apply=False, *, read=read_omnifocus,
     """Triage the Inbox and return a structured, JSON-serializable result.
 
     Dry-run by default; pass apply=True to move high-confidence matches."""
-    items, to_move, to_leave, failed_ids = _triage_pipeline(apply, read, classify, apply_fn)
+    items, to_move, to_leave, failed_ids, folder_tags = _triage_pipeline(
+        apply, read, classify, apply_fn)
     names = {i["id"]: i["name"] for i in items}
     failed_set = set(failed_ids)
-    moved = [_decision_dict(d, names) for d in to_move if d.item_id not in failed_set]
+    moved = [{**_decision_dict(d, names),
+              "folder_tag": folder_tag_name(folder_tags.get(d.project_id))}
+             for d in to_move if d.item_id not in failed_set]
     failed = [_decision_dict(d, names) for d in to_move if d.item_id in failed_set]
     left = [_decision_dict(d, names) for d in to_leave]
     return {
@@ -483,6 +544,7 @@ def run_triage(apply=False, *, read=read_omnifocus,
         "moved": moved,
         "left": left,
         "failed": failed,
+        "folder_tag_skipped": [m["name"] for m in moved if not m["folder_tag"]],
         "counts": {"inbox": len(items), "moved": len(moved),
                    "left": len(left), "failed": len(failed)},
     }
@@ -490,7 +552,7 @@ def run_triage(apply=False, *, read=read_omnifocus,
 
 def main():
     apply = "--apply" in sys.argv
-    items, to_move, to_leave, failed_ids = _triage_pipeline(
+    items, to_move, to_leave, failed_ids, _folder_tags = _triage_pipeline(
         apply, read_omnifocus, classify_in_batches, apply_moves)
     if not items:
         print('No inbox tasks to triage.')

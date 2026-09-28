@@ -152,9 +152,18 @@ def test_build_apply_config_maps_ids():
     to_move = [mk(item_id="t1", project_id="p1"), mk(item_id="t2", project_id="p9")]
     cfg = build_apply_config(to_move)
     assert cfg["moves"] == [
-        {"taskId": "t1", "projectId": "p1"},
-        {"taskId": "t2", "projectId": "p9"},
+        {"taskId": "t1", "projectId": "p1", "folderTagId": "", "folderTagCreate": ""},
+        {"taskId": "t2", "projectId": "p9", "folderTagId": "", "folderTagCreate": ""},
     ]
+
+
+def test_build_apply_config_adds_each_projects_folder_tag():
+    to_move = [mk(item_id="t1", project_id="p1"), mk(item_id="t2", project_id="p2")]
+    folder_tags = {"p1": {"kind": "match", "folder": "Home", "tag_id": "tHome"},
+                   "p2": {"kind": "create", "folder": "Work", "tag_id": None}}
+    moves = build_apply_config(to_move, folder_tags)["moves"]
+    assert [(m["folderTagId"], m["folderTagCreate"]) for m in moves] == [
+        ("tHome", ""), ("", "Work")]
 
 
 from omnifocus_inbox_triage import format_report
@@ -278,7 +287,7 @@ def test_run_triage_dry_run_builds_moved_and_left():
         apply=False,
         read=lambda: (items, [_proj()]),
         classify=lambda i, p: decisions,
-        apply_fn=lambda m: ([], []),
+        apply_fn=lambda m, ft=None: ([], []),
     )
     assert result["dry_run"] is True
     assert result["counts"] == {"inbox": 2, "moved": 1, "left": 1, "failed": 0}
@@ -297,7 +306,7 @@ def test_run_triage_apply_reports_failed_moves():
         apply=True,
         read=lambda: (items, [_proj()]),
         classify=lambda i, p: decisions,
-        apply_fn=lambda m: ([], ["t1"]),   # t1 failed to move
+        apply_fn=lambda m, ft=None: ([], ["t1"]),   # t1 failed to move
     )
     assert result["dry_run"] is False
     assert result["counts"]["moved"] == 0
@@ -311,7 +320,7 @@ def test_run_triage_empty_inbox_skips_classify():
         apply=False,
         read=lambda: ([], []),
         classify=lambda i, p: called.append(1),
-        apply_fn=lambda m: ([], []),
+        apply_fn=lambda m, ft=None: ([], []),
     )
     assert called == []          # classify never invoked on empty inbox
     assert result["counts"]["inbox"] == 0
@@ -352,3 +361,61 @@ def test_read_jxa_takes_folder_path_from_omnijs():
     assert "p.parentFolder" in READ_JXA
     assert "folderPath: folderMap[pid] || ''" in READ_JXA
     assert "p.container()" not in READ_JXA
+
+
+from omnifocus_inbox_triage import READ_JXA, WRITE_JXA, attach_folder_tags  # noqa: E402
+
+_TRIAGE_TAGS = [{"id": "tHome", "name": "Home", "parent_id": None, "in_kanban": False}]
+
+
+def test_attach_folder_tags_uses_the_top_level_segment():
+    projects = [{"id": "p1", "folderPath": "Home \u25B8 Vehicles"},
+                {"id": "p2", "folderPath": ""}]
+    attach_folder_tags(projects, _TRIAGE_TAGS)
+    assert projects[0]["folder_tag"] == {"kind": "match", "folder": "Home", "tag_id": "tHome"}
+    assert projects[1]["folder_tag"]["kind"] == "no_folder"
+
+
+def test_attach_folder_tags_adds_nothing_when_the_tag_tree_was_unreadable():
+    # A failed tag-tree read must never look like "no tags exist", which would
+    # create a duplicate top-level tag for every folder.
+    projects = [{"id": "p1", "folderPath": "Home"}]
+    attach_folder_tags(projects, None)
+    assert projects[0]["folder_tag"] is None
+    assert build_apply_config([mk(item_id="t1", project_id="p1")],
+                              {"p1": None})["moves"][0]["folderTagCreate"] == ""
+
+
+def test_run_triage_passes_folder_tags_and_reports_them():
+    items = [{"id": "t1", "name": "Vet appt", "note": ""},
+             {"id": "t2", "name": "Oil", "note": ""}]
+    p1 = {**_proj(), "folder_tag": {"kind": "match", "folder": "Home", "tag_id": "tHome"}}
+    p2 = {**_proj(pid="p2", name="Cars"),
+          "folder_tag": {"kind": "ambiguous", "folder": "Home", "tag_id": None}}
+    decisions = Classification(decisions=[
+        Decision(item_id="t1", project_id="p1", project_name="Pets",
+                 confidence="high", reason="cat"),
+        Decision(item_id="t2", project_id="p2", project_name="Cars",
+                 confidence="high", reason="car")])
+    seen = {}
+
+    def apply_fn(to_move, folder_tags):
+        seen["folder_tags"] = folder_tags
+        return [], []
+    result = run_triage(apply=True, read=lambda: (items, [p1, p2]),
+                        classify=lambda i, p: decisions, apply_fn=apply_fn)
+    assert seen["folder_tags"]["p1"]["tag_id"] == "tHome"
+    assert [m["folder_tag"] for m in result["moved"]] == ["Home", ""]
+    assert result["folder_tag_skipped"] == ["Oil"]
+
+
+def test_read_jxa_reads_the_tag_tree_via_omnijs():
+    assert "const tagTree" in READ_JXA
+    assert "tags = null" in READ_JXA          # failure => None, never []
+
+
+def test_write_jxa_keeps_free_text_out_and_never_fails_a_move_on_the_tag():
+    assert "encodeURIComponent(m.folderTagCreate" in WRITE_JXA
+    assert "const folderTagFor" in WRITE_JXA
+    assert "JSON.stringify(JSON.parse(argv[0]).moves)" not in WRITE_JXA
+    assert "try { const ft = folderTagFor(m[2], m[3]); if (ft) task.addTag(ft); } catch (e) {}" in WRITE_JXA
