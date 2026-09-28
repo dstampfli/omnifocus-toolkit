@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Local stdio MCP server exposing the OmniFocus toolkit's triage and reviewer
-capabilities as tools, for a scheduled Claude Cowork task in Claude Desktop.
+"""Local stdio MCP server exposing the OmniFocus toolkit's triage, reviewer,
+sorter and folder-tagger capabilities as tools, for a scheduled Claude Cowork task in Claude Desktop.
 
 Launched by Claude Desktop via:
   uv run --with mcp[cli] --with-editable <repo> mcp run <this file>
 """
 
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,9 +21,15 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 import omnifocus_inbox_triage as triage  # noqa: E402
 import omnifocus_sorter as sorter  # noqa: E402
+import omnifocus_tagger as tagger  # noqa: E402
 import omnifocus_task_reviewer as reviewer  # noqa: E402
 
 mcp = FastMCP("OmniFocus Toolkit")
+
+# Per-project log lines go to stderr (Claude Desktop keeps each MCP server's
+# stderr in ~/Library/Logs/Claude/mcp-server-<name>.log). Never print to stdout:
+# it carries the stdio MCP protocol.
+logger = logging.getLogger("omnifocus_toolkit")
 
 # Each task review is a blocking Claude API call of tens of seconds, so a single
 # review_tasks call over a large project can outlast the client's tool timeout.
@@ -114,6 +121,53 @@ def sort_project(projects: list[str], by: str, descending: bool = False,
         # Exception) on an invalid `by`/missing tag_order; catch it too so a
         # scheduled agent gets a clean {"error": ...} instead of a crash.
         return {"error": f"sort_project failed: {e}"}
+
+
+@mcp.tool()
+def tag_tasks(projects: list[str], apply: bool = False,
+              include_completed: bool = False,
+              create_missing_tags: bool = True) -> dict:
+    """Add each project's top-level folder name (e.g. Home, Work) as a tag to
+    every task in the named OmniFocus project(s). Additive only: existing tags,
+    including the Kanban lanes and Reviewed, are never removed, renamed or
+    reordered.
+
+    The folder tag is the top-level segment of the project's folder path (a
+    project in "Work : Customers" gets "Work"), matched to an existing tag by
+    leaf name, case-insensitive. A project outside any folder is skipped
+    (skipped_reason "no_folder"); two tags sharing the name put the project in
+    `failed` ("ambiguous_tag"). A tag that does not exist yet is created at the
+    top level of the tag tree, or reported as failed ("missing_tag") with
+    create_missing_tags=False. Action groups and all their subtasks are tagged;
+    completed and dropped tasks only with include_completed=True.
+
+    With apply=True, write the tags. The default apply=False previews exactly
+    what apply=True would write and changes nothing. Pass project names as
+    returned by list_projects; unknown names are reported in `missing` and the
+    other projects still run. Makes no Claude API calls, so every project fits
+    in one call and it needs no batching loop; a re-run with nothing new
+    reports tagged 0 and writes nothing.
+    """
+    try:
+        result = tagger.run_tag(projects, apply=apply,
+                                include_completed=include_completed,
+                                create_missing_tags=create_missing_tags)
+    except (Exception, SystemExit) as e:
+        # run_jxa raises SystemExit on an osascript failure; return a clean
+        # error instead of crashing the tool.
+        return {"error": f"tag_tasks failed: {e}"}
+    _log_tagging(result)
+    return result
+
+
+def _log_tagging(result):
+    mode = "preview" if result.get("dry_run") else "apply"
+    reasons = {f["project"]: f["reason"] for f in result.get("failed", [])}
+    for p in result.get("projects", []):
+        status = p["skipped_reason"] or reasons.get(p["name"]) or "ok"
+        logger.info("tag_tasks %s %s: folder=%s tagged=%d already=%d %s", mode,
+                    p["name"], p["folder_tag"], p["tagged"], p["already_tagged"],
+                    status)
 
 
 @mcp.tool()

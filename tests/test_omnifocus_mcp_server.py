@@ -156,3 +156,74 @@ def test_list_projects_wraps_errors(monkeypatch):
     monkeypatch.setattr(server.triage, "read_omnifocus", boom)
     out = server.list_projects()
     assert "error" in out and "no omnifocus" in out["error"]
+
+
+import logging  # noqa: E402
+
+
+def _tag_result(dry_run=True):
+    return {"dry_run": dry_run,
+            "projects": [{"id": "p1", "name": "Finances", "folder_tag": "Home",
+                          "count": 3, "tagged": 2, "already_tagged": 1,
+                          "skipped_reason": None},
+                         {"id": "p2", "name": "Loose", "folder_tag": None,
+                          "count": 1, "tagged": 0, "already_tagged": 0,
+                          "skipped_reason": "no_folder"}],
+            "tags_created": [], "applied": [], "failed": [], "missing": [],
+            "counts": {}}
+
+
+def test_tag_tasks_passes_through(monkeypatch):
+    seen = {}
+
+    def fake(projects, **kw):
+        seen.update(kw, projects=projects)
+        return _tag_result()
+    monkeypatch.setattr(server.tagger, "run_tag", fake)
+    out = server.tag_tasks(["Finances"], apply=True, include_completed=True,
+                           create_missing_tags=False)
+    assert out == _tag_result()
+    assert seen == {"projects": ["Finances"], "apply": True,
+                    "include_completed": True, "create_missing_tags": False}
+
+
+def test_tag_tasks_defaults_to_additive_preview(monkeypatch):
+    seen = {}
+
+    def fake(projects, **kw):
+        seen.update(kw)
+        return _tag_result()
+    monkeypatch.setattr(server.tagger, "run_tag", fake)
+    server.tag_tasks(["Finances"])
+    assert seen == {"apply": False, "include_completed": False,
+                    "create_missing_tags": True}
+
+
+def test_tag_tasks_wraps_errors_and_systemexit(monkeypatch):
+    def boom(projects, **kw):
+        raise RuntimeError("nope")
+    monkeypatch.setattr(server.tagger, "run_tag", boom)
+    assert "nope" in server.tag_tasks(["X"])["error"]
+
+    def exits(projects, **kw):
+        raise SystemExit(1)
+    monkeypatch.setattr(server.tagger, "run_tag", exits)
+    assert "error" in server.tag_tasks(["X"])
+
+
+def test_tag_tasks_logs_one_line_per_project(monkeypatch, caplog):
+    monkeypatch.setattr(server.tagger, "run_tag", lambda projects, **kw: _tag_result())
+    with caplog.at_level(logging.INFO, logger="omnifocus_toolkit"):
+        server.tag_tasks(["Finances", "Loose"])
+    lines = [r.getMessage() for r in caplog.records if r.name == "omnifocus_toolkit"]
+    assert lines == [
+        "tag_tasks preview Finances: folder=Home tagged=2 already=1 ok",
+        "tag_tasks preview Loose: folder=None tagged=0 already=0 no_folder",
+    ]
+
+
+def test_tag_tasks_docstring_states_the_contract():
+    doc = server.tag_tasks.__doc__
+    for phrase in ("Additive only", "apply=False", "top-level", "case-insensitive",
+                   "no Claude", "list_projects"):
+        assert phrase in doc
