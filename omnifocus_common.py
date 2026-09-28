@@ -240,13 +240,17 @@ def resolve_folder_tag(folder, tags):
     Returns {"kind", "folder", "tag_id"}, kind being:
       match      exactly one non-Kanban tag has this leaf name (at any depth)
       create     none does; a writer may create a top-level tag named `folder`
-      ambiguous  two or more do; never guess between them
+      ambiguous  two or more do, or a Kanban tag has this name (creating a
+                 second one would collide with the board); never guess
       no_folder  the project sits outside any folder
     """
     folder = (folder or "").strip()
     if not folder:
         return {"kind": "no_folder", "folder": "", "tag_id": None}
     key = folder.casefold()
+    if any(t.get("in_kanban") and (t.get("name") or "").casefold() == key
+           for t in tags):
+        return {"kind": "ambiguous", "folder": folder, "tag_id": None}
     hits = [t for t in tags
             if not t.get("in_kanban") and (t.get("name") or "").casefold() == key]
     if len(hits) == 1:

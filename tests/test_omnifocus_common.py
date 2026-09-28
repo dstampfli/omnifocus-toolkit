@@ -330,7 +330,8 @@ def test_resolve_folder_tag_matches_nested_tag_by_leaf_name():
 
 def test_resolve_folder_tag_never_matches_the_kanban_subtree():
     tags = [_tag("tK", "Kanban", in_kanban=True), _tag("tW", "Work", "tK", True)]
-    assert resolve_folder_tag("Work", tags)["kind"] == "create"
+    # Never matched, and never duplicated either: see the next test.
+    assert resolve_folder_tag("Work", tags)["kind"] == "ambiguous"
 
 
 def test_resolve_folder_tag_refuses_to_guess_between_two_leaf_matches():
@@ -404,3 +405,13 @@ def test_omnijs_fragments_encode_the_rule():
     assert "decodeURIComponent(enc)" in FOLDER_TAG_WRITE_JS
     for js in (TAG_TREE_JS, TOP_FOLDER_JS, FOLDER_TAG_WRITE_JS):
         assert "removeTag" not in js and "clearTags" not in js
+
+
+def test_resolve_folder_tag_never_duplicates_a_kanban_tag_name():
+    # A folder named like a board lane or the Kanban parent must not create a
+    # second top-level tag of that name: the reviewer would skip every task
+    # carrying it and could reparent it into the board.
+    for folder in ("Reviewed", "waiting", "Kanban"):
+        tags = FOLDER_TAGS + [_tag("tW", "Waiting", "tK", True)]
+        assert resolve_folder_tag(folder, tags) == {
+            "kind": "ambiguous", "folder": folder, "tag_id": None}
