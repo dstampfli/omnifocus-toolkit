@@ -60,23 +60,31 @@
   }
   :focus-visible { outline: 2px solid var(--rail); outline-offset: 2px; }
 
-  header {
-    display: flex;
-    align-items: baseline;
-    gap: 20px;
-    flex-wrap: wrap;
-    padding: 18px 28px 10px;
-  }
-  h1 { font-size: 28px; font-weight: 500; margin: 0; letter-spacing: -0.01em; }
-  .controls {
-    margin-left: auto;
+  /* Header: a masthead row (title, last update, the actions that change
+     OmniFocus) over a toolbar row (everything that only changes the view). */
+  header { padding: 16px 28px 0; }
+  .masthead, .toolbar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
+    flex-wrap: wrap;
     font-size: 14px;
     color: var(--ink-2);
   }
-  .controls label { display: flex; align-items: center; gap: 6px; }
+  .masthead { gap: 14px; }
+  h1 { font-size: 28px; font-weight: 500; margin: 0; letter-spacing: -0.01em; color: var(--ink); }
+  #updated { color: var(--ink-3); font-size: 13px; }
+  .actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .toolbar {
+    margin-top: 12px;
+    padding: 10px 0;
+    border-top: 1px solid var(--lane-edge);
+  }
+  .toolbar .spacer { flex: 1; }
+  .toolbar label { display: flex; align-items: center; gap: 6px; }
+  /* View dropdowns open from the left edge; the Review picker (in .actions)
+     keeps the default right-aligned panel. */
+  .toolbar .filter-panel { left: 0; right: auto; }
   select, button, input[type="search"] {
     font: inherit;
     font-size: 14px;
@@ -90,7 +98,7 @@
   button:hover { border-color: var(--rail); }
   /* Search: narrows the cards as you type (see matchesSearch). Sits in the
      header, which render() never rebuilds, so the text survives auto-refresh. */
-  input[type="search"] { width: 210px; -webkit-appearance: none; appearance: none; }
+  input[type="search"] { width: 260px; -webkit-appearance: none; appearance: none; }
   input[type="search"]:focus { border-color: var(--rail); }
   input[type="search"]::placeholder { color: var(--ink-3); }
 
@@ -192,23 +200,68 @@
   button.primary { background: var(--rail); border-color: var(--rail); color: var(--card); }
   button.primary:hover { filter: brightness(1.08); }
   button:disabled, button.primary:disabled { opacity: 0.5; cursor: default; filter: none; }
+  /* Run results drawer, fixed to the right edge. On a wide window the page
+     makes room for it (body.drawer-open), so no lane is covered; on a narrow
+     one it overlays the board. Hiding it never cancels the run: the chip in
+     .actions shows the run's state and reopens it. */
+  :root { --drawer-w: 420px; }
   #run-panel {
-    margin: 10px 28px 0;
-    padding: 12px 16px;
-    max-height: 42vh;
-    overflow-y: auto;
-    border-radius: 8px;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(var(--drawer-w), 100vw);
+    display: flex;
+    flex-direction: column;
     background: var(--card);
-    border: 1px solid var(--card-edge);
-    border-left: 4px solid var(--rail);
+    border-left: 1px solid var(--card-edge);
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
     font-size: 14px;
   }
-  #run-panel.error { border-left-color: var(--overdue); }
-  .run-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .run-title { font-size: 16px; font-weight: 500; }
-  .run-status { color: var(--ink-2); }
-  .run-actions { margin-left: auto; display: flex; gap: 8px; }
-  .run-section { margin-top: 12px; }
+  #run-panel[hidden], .drawer-foot[hidden], .run-chip[hidden] { display: none; }
+  @media (min-width: 1100px) {
+    body.drawer-open { padding-right: var(--drawer-w); }
+  }
+  .drawer-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 16px 18px 12px;
+    border-bottom: 1px solid var(--lane-edge);
+    border-top: 4px solid var(--rail);
+  }
+  #run-panel.error .drawer-head { border-top-color: var(--overdue); }
+  .drawer-head > div { flex: 1; min-width: 0; }
+  .run-title { font-size: 17px; font-weight: 500; overflow-wrap: anywhere; }
+  .run-status { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+  .icon-btn {
+    border: 0;
+    background: none;
+    padding: 0 4px;
+    font-size: 22px;
+    line-height: 1;
+    color: var(--ink-3);
+  }
+  .icon-btn:hover { color: var(--ink); }
+  .run-body { flex: 1; overflow-y: auto; padding: 4px 18px 16px; }
+  .drawer-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--lane-edge);
+  }
+  .run-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .run-chip::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--rail);
+  }
+  .run-chip.error::before { background: var(--overdue); }
+  .run-section { margin-top: 14px; }
   .run-section h3 {
     margin: 0 0 4px;
     font-size: 12px;
@@ -218,7 +271,7 @@
     color: var(--ink-3);
   }
   .run-section ul { list-style: none; margin: 0; padding: 0; }
-  .run-section li { padding: 5px 0; border-top: 1px solid var(--lane-edge); }
+  .run-section li { padding: 7px 0; border-top: 1px solid var(--lane-edge); }
   .run-section li:first-child { border-top: 0; }
   .run-detail { color: var(--ink-2); font-size: 13px; }
   .run-summary { white-space: pre-wrap; color: var(--ink-2); font-size: 13px; margin-top: 3px; }
@@ -347,8 +400,31 @@
 </head>
 <body>
 <header>
-  <h1 id="title">Kanban</h1>
-  <div class="controls">
+  <div class="masthead">
+    <h1 id="title">Kanban</h1>
+    <button id="refresh" type="button">Refresh</button>
+    <span id="updated"></span>
+    <div class="actions">
+      <button id="run-chip" class="run-chip" type="button" hidden title="Show the run panel"></button>
+      <button id="run-triage" type="button" title="Preview moving Inbox tasks into projects (uses the Claude API)">Triage Inbox</button>
+    <div class="filter" id="review-picker">
+      <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false"
+              title="Preview enriching tasks in the chosen projects (uses the Claude API)">
+        <span class="filter-value">Review</span>
+        <span class="filter-caret">&#9662;</span>
+      </button>
+      <div class="filter-panel" hidden>
+        <div class="filter-head">
+          <span class="filter-summary">Projects to review</span>
+          <button type="button" class="filter-clear">Clear</button>
+        </div>
+        <ul class="filter-list"></ul>
+        <div class="run-foot"><button type="button" class="primary" id="run-review">Preview</button></div>
+      </div>
+    </div>
+    </div>
+  </div>
+  <div class="toolbar">
     <input id="search" type="search" placeholder="Search cards&hellip; ( / )" aria-label="Search cards"
            autocomplete="off" spellcheck="false">
     <div class="filter" id="project-filter">
@@ -393,6 +469,7 @@
         <ul class="filter-list"></ul>
       </div>
     </div>
+    <span class="spacer"></span>
     <label>Sort
       <select id="sort">
         <option value="due">Due date</option>
@@ -401,38 +478,23 @@
         <option value="added">Added</option>
       </select>
     </label>
-    <button id="refresh" type="button">Refresh</button>
-    <button id="run-triage" type="button" title="Preview moving Inbox tasks into projects (uses the Claude API)">Triage Inbox</button>
-    <div class="filter" id="review-picker">
-      <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false"
-              title="Preview enriching tasks in the chosen projects (uses the Claude API)">
-        <span class="filter-value">Review</span>
-        <span class="filter-caret">&#9662;</span>
-      </button>
-      <div class="filter-panel" hidden>
-        <div class="filter-head">
-          <span class="filter-summary">Projects to review</span>
-          <button type="button" class="filter-clear">Clear</button>
-        </div>
-        <ul class="filter-list"></ul>
-        <div class="run-foot"><button type="button" class="primary" id="run-review">Preview</button></div>
-      </div>
-    </div>
-    <span id="updated"></span>
   </div>
 </header>
 <div id="banner" hidden></div>
-<section id="run-panel" hidden aria-live="polite">
-  <div class="run-head">
-    <span class="run-title"></span>
-    <span class="run-status"></span>
-    <span class="run-actions">
-      <button type="button" class="primary" id="run-apply">Apply</button>
-      <button type="button" id="run-discard">Discard</button>
-    </span>
+<aside id="run-panel" hidden aria-live="polite" aria-label="Run results">
+  <div class="drawer-head">
+    <div>
+      <div class="run-title"></div>
+      <div class="run-status"></div>
+    </div>
+    <button type="button" class="icon-btn" id="run-hide" aria-label="Hide the run panel" title="Hide (the run keeps going)">&times;</button>
   </div>
   <div class="run-body"></div>
-</section>
+  <div class="drawer-foot">
+    <button type="button" id="run-discard">Discard</button>
+    <button type="button" class="primary" id="run-apply">Apply</button>
+  </div>
+</aside>
 <main id="board"></main>
 <div id="toast" hidden></div>
 
@@ -470,7 +532,8 @@
       state.board = data;
       hideBanner();
       render();
-      $("#updated").textContent = "Updated " + new Date().toLocaleTimeString();
+      $("#updated").textContent = "Updated " + new Date().toLocaleString(undefined,
+        { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
     } catch (err) {
       showBanner("Couldn't reach the board server. Is it still running? (" + err.message + ")");
     }
@@ -530,7 +593,13 @@
   const tie = (a, b) =>
     cmp(projectName(a).toLowerCase(), projectName(b).toLowerCase()) || cmp(title(a), title(b));
 
+  // Flagged cards first under every key; the chosen key orders each group.
   function sortCards(cards, key) {
+    const ordered = sortByKey(cards, key);
+    return ordered.filter((c) => c.flagged).concat(ordered.filter((c) => !c.flagged));
+  }
+
+  function sortByKey(cards, key) {
     const list = cards.slice();
     if (key === "title") {
       return list.sort((a, b) => cmp(title(a), title(b)) ||
@@ -943,7 +1012,8 @@
   // (or error). The page starts it, then polls /api/run until it settles.
   // Apply writes exactly the previewed result (no second model call).
 
-  const run = { job: { state: "idle" }, picked: new Set(), projects: null, poll: null, started: 0 };
+  const run = { job: { state: "idle" }, picked: new Set(), projects: null, poll: null, started: 0,
+                drawerHidden: false };
   const BUSY = new Set(["running", "applying"]);
 
   async function runRequest(method, path, body) {
@@ -961,6 +1031,8 @@
   function setJob(job) {
     const was = run.job.state;
     if (BUSY.has(job.state) && !BUSY.has(was)) run.started = Date.now();
+    // Reopen the drawer when a run starts or reaches a result the user must see.
+    if (job.state !== was && job.state !== "idle" && job.state !== "applying") run.drawerHidden = false;
     run.job = job;
     if (was === "applying" && job.state === "done") load(); // show moved/reviewed cards
     renderRun();
@@ -1045,9 +1117,15 @@
     const busy = BUSY.has(job.state);
     $("#run-triage").disabled = busy || job.state === "preview";
     $("#run-review").disabled = busy || job.state === "preview" || run.picked.size === 0;
-    if (job.state === "idle") { panel.hidden = true; return; }
-    panel.hidden = false;
+    const active = job.state !== "idle";
+    const open = active && !run.drawerHidden;
+    panel.hidden = !open;
+    document.body.classList.toggle("drawer-open", open);
+    const chip = $("#run-chip");
+    chip.hidden = !active || open;
+    if (!active) return;
     panel.classList.toggle("error", job.state === "error");
+    chip.classList.toggle("error", job.state === "error");
 
     const what = job.kind === "triage" ? "Triage Inbox" : "Review " + job.projects.join(", ");
     const secs = Math.round((Date.now() - run.started) / 1000);
@@ -1059,6 +1137,10 @@
       done: "Applied",
       error: "Failed",
     }[job.state] || job.state;
+    chip.textContent = (job.kind === "triage" ? "Triage" : "Review") + " \u00B7 " + {
+      running: "previewing\u2026", applying: "applying\u2026", preview: "preview ready",
+      done: "applied", error: "failed",
+    }[job.state];
     const apply = $("#run-apply");
     apply.hidden = job.state !== "preview";
     const r = job.result;
@@ -1066,6 +1148,7 @@
     const discard = $("#run-discard");
     discard.hidden = busy;
     discard.textContent = job.state === "preview" ? "Discard" : "Close";
+    panel.querySelector(".drawer-foot").hidden = apply.hidden && discard.hidden;
 
     const body = panel.querySelector(".run-body");
     body.textContent = "";
@@ -1206,6 +1289,8 @@
     startRun("/api/run/review", { projects: [...run.picked] }));
   $("#run-apply").addEventListener("click", () => startRun("/api/run/apply"));
   $("#run-discard").addEventListener("click", () => startRun("/api/run/discard"));
+  $("#run-hide").addEventListener("click", () => { run.drawerHidden = true; renderRun(); });
+  $("#run-chip").addEventListener("click", () => { run.drawerHidden = false; renderRun(); });
   // Tick the elapsed-seconds counter while a job runs.
   setInterval(() => { if (BUSY.has(run.job.state)) renderRun(); }, 1000);
 

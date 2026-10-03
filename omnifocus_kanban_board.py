@@ -106,9 +106,16 @@ def _title(card):
 def sort_cards(cards, key="due"):
     """Return `cards` in sorted order; never mutates the input.
 
-    Cards with no value for the key sort last (as in omnifocus_sorter), the
-    sort is stable, and ties break by project name then title. 'added' is
-    newest first; the other keys ascend."""
+    Flagged cards come first under every key; within the flagged and
+    unflagged groups, cards with no value for the key sort last (as in
+    omnifocus_sorter), the sort is stable, and ties break by project name
+    then title. 'added' is newest first; the other keys ascend."""
+    ordered = _sort_by_key(cards, key)
+    return ([c for c in ordered if c.get("flagged")]
+            + [c for c in ordered if not c.get("flagged")])
+
+
+def _sort_by_key(cards, key):
     if key not in SORT_KEYS:
         raise ValueError(f"unknown sort key {key!r}; valid keys: "
                          f"{', '.join(SORT_KEYS)}")

@@ -114,6 +114,19 @@ def test_sort_is_stable_and_pure():
     assert out is not cards
 
 
+@pytest.mark.parametrize("key", SORT_KEYS)
+def test_flagged_cards_sort_first_under_every_key(key):
+    cards = [card("a", name="A", due=1, added=1),
+             card("b", name="B", due=None, added=None, flagged=True),
+             card("c", name="C", due=2, added=2, flagged=True),
+             card("d", name="D", due=3, added=3)]
+    out = ids(sort_cards(cards, key))
+    assert set(out[:2]) == {"b", "c"} and set(out[2:]) == {"a", "d"}
+    # Within each group the chosen key still applies.
+    assert out == [i for i in ids(sort_cards([cards[1], cards[2]], key))
+                   + ids(sort_cards([cards[0], cards[3]], key))]
+
+
 # ------------------------------- finish_card ------------------------------
 
 def test_finish_card_replaces_note_with_excerpt():
