@@ -739,3 +739,288 @@ def test_real_page_exists_and_loads_nothing_external():
     stripped = re.sub(r"""(["'])data:.*?\1""", r"\1\1", html)
     assert "http://" not in stripped and "https://" not in stripped
     assert 'src="' not in stripped
+
+
+# ------------------------- triage / review runs ---------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from omnifocus_kanban_board import (  # noqa: E402
+    REVIEW_MAX_TASKS,
+    JobRunner,
+    review_preview,
+    triage_preview,
+    validate_review_projects,
+)
+
+
+def sync_runner():
+    """A JobRunner that runs each job inline, so tests see the end state."""
+    return JobRunner(spawn=lambda fn: fn())
+
+
+def test_job_runner_starts_idle():
+    assert sync_runner().snapshot() == {"state": "idle", "kind": None,
+                                        "projects": [], "result": None,
+                                        "error": None}
+
+
+def test_job_runner_preview_then_apply_then_discard():
+    applied = []
+    runner = sync_runner()
+    ok, _ = runner.start("triage", [], lambda: ({"n": 1}, lambda: applied.append(1) or {"n": 2}))
+    assert ok
+    snap = runner.snapshot()
+    assert snap["state"] == "preview" and snap["kind"] == "triage"
+    assert snap["result"] == {"n": 1}
+    ok, _ = runner.apply()
+    assert ok and applied == [1]
+    snap = runner.snapshot()
+    assert snap["state"] == "done" and snap["result"] == {"n": 2}
+    assert runner.discard()[0]
+    assert runner.snapshot()["state"] == "idle"
+
+
+def test_job_runner_refuses_a_second_job_while_one_is_unfinished():
+    pending = []
+    runner = JobRunner(spawn=pending.append)  # never runs the thread body
+    assert runner.start("triage", [], lambda: ({}, None))[0]
+    assert runner.snapshot()["state"] == "running"
+    ok, msg = runner.start("review", ["P"], lambda: ({}, None))
+    assert not ok and "already" in msg
+    assert not runner.discard()[0]  # cannot discard a running job
+    assert not runner.apply()[0]
+
+
+def test_job_runner_refuses_new_job_over_an_unapplied_preview():
+    runner = sync_runner()
+    runner.start("triage", [], lambda: ({}, lambda: {}))
+    ok, msg = runner.start("triage", [], lambda: ({}, lambda: {}))
+    assert not ok and "preview" in msg
+
+
+def test_job_runner_allows_new_job_after_done_or_error():
+    runner = sync_runner()
+    runner.start("triage", [], lambda: ({}, lambda: {}))
+    runner.apply()
+    assert runner.start("triage", [], lambda: ({}, lambda: {}))[0]
+    runner.discard()
+
+    def boom():
+        raise RuntimeError("nope")
+    runner.start("triage", [], boom)
+    assert runner.snapshot()["state"] == "error"
+    assert runner.start("triage", [], lambda: ({}, lambda: {}))[0]
+
+
+def test_job_runner_apply_requires_a_preview():
+    assert not sync_runner().apply()[0]
+
+
+def test_job_runner_reports_errors_including_system_exit():
+    runner = sync_runner()
+
+    def boom():
+        raise RuntimeError("API down")
+    runner.start("triage", [], boom)
+    snap = runner.snapshot()
+    assert snap["state"] == "error" and "API down" in snap["error"]
+
+    runner.discard()
+
+    def exits():
+        raise SystemExit(1)  # read_omnifocus/run_jxa exit after printing to stderr
+    runner.start("review", ["P"], exits)
+    snap = runner.snapshot()
+    assert snap["state"] == "error" and "terminal" in snap["error"]
+
+    runner.discard()
+
+    def exits_with_message():
+        raise SystemExit("CHUNK_SIZE must be a positive integer")
+    runner.start("triage", [], exits_with_message)
+    assert runner.snapshot()["error"] == "CHUNK_SIZE must be a positive integer"
+
+
+def test_job_runner_apply_failure_is_an_error_state():
+    runner = sync_runner()
+
+    def bad_apply():
+        raise RuntimeError("write failed")
+    runner.start("triage", [], lambda: ({}, bad_apply))
+    runner.apply()
+    snap = runner.snapshot()
+    assert snap["state"] == "error" and "write failed" in snap["error"]
+
+
+def test_job_runner_runs_apply_under_the_given_lock():
+    lock = threading.Lock()
+    seen = []
+    runner = JobRunner(spawn=lambda fn: fn(), apply_lock=lock)
+    runner.start("triage", [], lambda: ({}, lambda: seen.append(lock.locked()) or {}))
+    runner.apply()
+    assert seen == [True]
+
+
+def test_triage_preview_applies_the_cached_classification_without_reclassifying():
+    classification = SimpleNamespace(decisions=["d"])
+    calls = []
+
+    def classify(items, projects):
+        calls.append("classify")
+        return classification
+
+    def run(apply=False, classify=None):
+        got = classify(["item"], ["proj"])
+        return {"apply": apply, "got": got}
+
+    result, apply = triage_preview(run=run, classify=classify)
+    assert result == {"apply": False, "got": classification}
+    assert apply() == {"apply": True, "got": classification}
+    assert calls == ["classify"]  # only the preview hit the API
+
+
+def test_triage_preview_with_empty_inbox_applies_no_decisions():
+    def run(apply=False, classify=None):
+        if apply:  # an item arrived between preview and apply
+            return {"got": classify(["new"], [])}
+        return {"empty": True}
+
+    _, apply = triage_preview(run=run, classify=lambda i, p: 1 / 0)
+    assert apply()["got"].decisions == []
+
+
+def test_review_preview_caps_preview_and_applies_cached_enrichments_to_fresh_tasks():
+    calls = []
+
+    def review(tasks):
+        calls.append([t["id"] for t in tasks])
+        return [(t, "E-" + t["id"]) for t in tasks if t["id"] != "bad"], \
+               [(t, "boom") for t in tasks if t["id"] == "bad"]
+
+    def run(projects, apply=False, review=None, max_tasks=None):
+        if not apply:
+            tasks = [{"id": "a"}, {"id": "bad"}, {"id": "c"}][:max_tasks]
+        else:  # fresh read: "a" was reviewed elsewhere, "new" appeared
+            tasks = [{"id": "bad", "fresh": True}, {"id": "c", "fresh": True},
+                     {"id": "new", "fresh": True}]
+        reviewed, failed = review(tasks)
+        return {"projects": projects, "apply": apply, "max_tasks": max_tasks,
+                "reviewed": reviewed, "failed": failed}
+
+    result, apply = review_preview(["P"], max_tasks=3, run=run, review=review)
+    assert result["apply"] is False and result["max_tasks"] == 3
+    assert [t["id"] for t, _ in result["reviewed"]] == ["a", "c"]
+    applied = apply()
+    assert applied["apply"] is True and applied["max_tasks"] is None
+    # Only previewed successes are written, paired with the fresh task data.
+    assert applied["reviewed"] == [({"id": "c", "fresh": True}, "E-c")]
+    assert applied["failed"] == []
+    assert calls == [["a", "bad", "c"]]  # apply made no review calls
+
+
+def test_validate_review_projects():
+    known = {"Training", "Tech"}
+    assert validate_review_projects({"projects": ["Tech", "Training", "Tech"]}, known) \
+        == ["Tech", "Training"]
+    for body in (None, [], {}, {"projects": []}, {"projects": "Tech"},
+                 {"projects": [1]}, {"projects": ["Nope"]}):
+        with pytest.raises(MoveError):
+            validate_review_projects(body, known)
+    with pytest.raises(MoveError, match="project list"):
+        validate_review_projects({"projects": ["Tech"]}, None)
+
+
+def make_run_app(**kw):
+    runner = sync_runner()
+    defaults = dict(
+        list_projects=lambda: ["Training", "Tech"],
+        triage_job=lambda: ({"kind": "triage"}, lambda: {"applied": "triage"}),
+        review_job=lambda projects, max_tasks: (
+            {"projects": projects, "max_tasks": max_tasks},
+            lambda: {"applied": projects}),
+        runner=runner,
+    )
+    defaults.update(kw)
+    return make_app(**defaults)
+
+
+def test_get_projects_lists_names_and_maps_failures_to_500():
+    app = make_run_app()
+    assert app.get_projects() == (200, {"projects": ["Training", "Tech"]})
+
+    def exits():
+        raise SystemExit(1)
+    status, payload = make_run_app(list_projects=exits).get_projects()
+    assert status == 500 and "terminal" in payload["error"]
+
+
+def test_post_run_requires_header():
+    app = make_run_app()
+    for method in (app.post_run_triage, app.post_run_review,
+                   app.post_run_apply, app.post_run_discard):
+        status, payload = method({}, False)
+        assert status == 400 and "X-Kanban" in payload["error"]
+
+
+def test_post_run_triage_previews_and_applies():
+    app = make_run_app()
+    status, payload = app.post_run_triage(None, True)
+    assert status == 202 and payload["state"] == "preview"
+    assert payload["result"] == {"kind": "triage"}
+    status, payload = app.post_run_apply(None, True)
+    assert status == 202
+    assert app.get_run() == (200, {"state": "done", "kind": "triage", "projects": [],
+                                   "result": {"applied": "triage"}, "error": None})
+
+
+def test_post_run_review_requires_known_projects():
+    app = make_run_app()
+    status, payload = app.post_run_review({"projects": ["Training"]}, True)
+    assert status == 400 and "project list" in payload["error"]
+    app.get_projects()
+    status, payload = app.post_run_review({"projects": ["Nope"]}, True)
+    assert status == 400
+    status, payload = app.post_run_review({"projects": ["Training"]}, True)
+    assert status == 202
+    assert payload["projects"] == ["Training"]
+    assert payload["result"] == {"projects": ["Training"], "max_tasks": REVIEW_MAX_TASKS}
+
+
+def test_post_run_conflicts_are_409():
+    app = make_run_app()
+    app.post_run_triage(None, True)
+    assert app.post_run_triage(None, True)[0] == 409
+    app.post_run_discard(None, True)
+    assert app.post_run_apply(None, True)[0] == 409
+
+
+def test_run_endpoints_over_http(tmp_path):
+    app = make_run_app(tmp_path=tmp_path)
+    srv = make_server(app, 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        hdr = {"Content-Type": "application/json", "X-Kanban": "1"}
+        resp, data = request(srv, "GET", "/api/run")
+        assert resp.status == 200 and json.loads(data)["state"] == "idle"
+        resp, data = request(srv, "GET", "/api/projects")
+        assert json.loads(data) == {"projects": ["Training", "Tech"]}
+        resp, data = request(srv, "POST", "/api/run/review",
+                             json.dumps({"projects": ["Tech"]}), hdr)
+        assert resp.status == 202 and json.loads(data)["state"] == "preview"
+        resp, data = request(srv, "POST", "/api/run/apply", "", hdr)
+        assert resp.status == 202
+        resp, data = request(srv, "GET", "/api/run")
+        assert json.loads(data)["result"] == {"applied": ["Tech"]}
+        resp, _ = request(srv, "POST", "/api/run/discard", "", hdr)
+        assert resp.status == 200
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_real_page_wires_the_run_endpoints():
+    html = PAGE_PATH.read_text(encoding="utf-8")
+    for path in ("/api/run", "/api/run/triage", "/api/run/review",
+                 "/api/run/apply", "/api/run/discard", "/api/projects"):
+        assert path in html, path

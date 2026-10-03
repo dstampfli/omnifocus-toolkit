@@ -176,6 +176,54 @@
     font-size: 14px;
   }
 
+  /* Triage / Review runs. The Review picker reuses the .filter dropdown (so
+     outside-click and Escape close it); its footer holds the Preview button.
+     The results panel sits outside #board, so auto-refresh never rebuilds it. */
+  .run-foot {
+    position: sticky;
+    bottom: -6px;
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px 2px;
+    background: var(--card);
+    border-top: 1px solid var(--lane-edge);
+  }
+  .run-note { padding: 8px 12px; color: var(--ink-3); font-size: 13px; }
+  button.primary { background: var(--rail); border-color: var(--rail); color: var(--card); }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled, button.primary:disabled { opacity: 0.5; cursor: default; filter: none; }
+  #run-panel {
+    margin: 10px 28px 0;
+    padding: 12px 16px;
+    max-height: 42vh;
+    overflow-y: auto;
+    border-radius: 8px;
+    background: var(--card);
+    border: 1px solid var(--card-edge);
+    border-left: 4px solid var(--rail);
+    font-size: 14px;
+  }
+  #run-panel.error { border-left-color: var(--overdue); }
+  .run-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .run-title { font-size: 16px; font-weight: 500; }
+  .run-status { color: var(--ink-2); }
+  .run-actions { margin-left: auto; display: flex; gap: 8px; }
+  .run-section { margin-top: 12px; }
+  .run-section h3 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-3);
+  }
+  .run-section ul { list-style: none; margin: 0; padding: 0; }
+  .run-section li { padding: 5px 0; border-top: 1px solid var(--lane-edge); }
+  .run-section li:first-child { border-top: 0; }
+  .run-detail { color: var(--ink-2); font-size: 13px; }
+  .run-summary { white-space: pre-wrap; color: var(--ink-2); font-size: 13px; margin-top: 3px; }
+  .run-extra { margin-top: 10px; color: var(--soon); }
+
   #board {
     flex: 1;
     min-height: 0;
@@ -354,10 +402,37 @@
       </select>
     </label>
     <button id="refresh" type="button">Refresh</button>
+    <button id="run-triage" type="button" title="Preview moving Inbox tasks into projects (uses the Claude API)">Triage Inbox</button>
+    <div class="filter" id="review-picker">
+      <button type="button" class="filter-button" aria-haspopup="true" aria-expanded="false"
+              title="Preview enriching tasks in the chosen projects (uses the Claude API)">
+        <span class="filter-value">Review</span>
+        <span class="filter-caret">&#9662;</span>
+      </button>
+      <div class="filter-panel" hidden>
+        <div class="filter-head">
+          <span class="filter-summary">Projects to review</span>
+          <button type="button" class="filter-clear">Clear</button>
+        </div>
+        <ul class="filter-list"></ul>
+        <div class="run-foot"><button type="button" class="primary" id="run-review">Preview</button></div>
+      </div>
+    </div>
     <span id="updated"></span>
   </div>
 </header>
 <div id="banner" hidden></div>
+<section id="run-panel" hidden aria-live="polite">
+  <div class="run-head">
+    <span class="run-title"></span>
+    <span class="run-status"></span>
+    <span class="run-actions">
+      <button type="button" class="primary" id="run-apply">Apply</button>
+      <button type="button" id="run-discard">Discard</button>
+    </span>
+  </div>
+  <div class="run-body"></div>
+</section>
 <main id="board"></main>
 <div id="toast" hidden></div>
 
@@ -863,6 +938,185 @@
     }
   }
 
+  // ------------------------- triage / review runs -------------------------
+  // The server runs one job at a time: running -> preview -> applying -> done
+  // (or error). The page starts it, then polls /api/run until it settles.
+  // Apply writes exactly the previewed result (no second model call).
+
+  const run = { job: { state: "idle" }, picked: new Set(), projects: null, poll: null, started: 0 };
+  const BUSY = new Set(["running", "applying"]);
+
+  async function runRequest(method, path, body) {
+    const opts = { method, cache: "no-store" };
+    if (method === "POST") {
+      opts.headers = { "Content-Type": "application/json", "X-Kanban": "1" };
+      opts.body = JSON.stringify(body || {});
+    }
+    const resp = await fetch(path, opts);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || ("server returned " + resp.status));
+    return data;
+  }
+
+  function setJob(job) {
+    const was = run.job.state;
+    if (BUSY.has(job.state) && !BUSY.has(was)) run.started = Date.now();
+    run.job = job;
+    if (was === "applying" && job.state === "done") load(); // show moved/reviewed cards
+    renderRun();
+    clearTimeout(run.poll);
+    if (BUSY.has(job.state)) run.poll = setTimeout(pollRun, 2000);
+  }
+  async function pollRun() {
+    try { setJob(await runRequest("GET", "/api/run")); }
+    catch (err) { run.poll = setTimeout(pollRun, 5000); }
+  }
+  async function startRun(path, body) {
+    closeFilters();
+    try { setJob(await runRequest("POST", path, body)); }
+    catch (err) { toast(err.message); }
+  }
+
+  const make = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+
+  // One titled list; `row` turns an item into an <li>. Skipped when empty.
+  function section(body, heading, items, row) {
+    if (!items || !items.length) return;
+    const s = make("div", "run-section");
+    s.appendChild(make("h3", null, heading + " (" + items.length + ")"));
+    const ul = make("ul");
+    for (const item of items) ul.appendChild(row(item));
+    s.appendChild(ul);
+    body.appendChild(s);
+  }
+  function line(main, detail) {
+    const li = make("li");
+    li.appendChild(make("div", null, main));
+    if (detail) li.appendChild(make("div", "run-detail", detail));
+    return li;
+  }
+
+  function renderTriage(body, r, preview) {
+    const moveRow = (m) => line(
+      m.name + "  →  " + m.project,
+      m.confidence + " confidence" + (m.folder_tag ? " · tag " + m.folder_tag : "") +
+      (m.reason ? " — " + m.reason : ""));
+    section(body, preview ? "Would move" : "Moved", r.moved, moveRow);
+    section(body, "Failed", r.failed, moveRow);
+    if (preview) {
+      section(body, "Would stay in the Inbox", r.left, (m) =>
+        line(m.name, (m.project ? "best guess " + m.project + ", " + m.confidence + " confidence" : "no match") +
+             (m.reason ? " — " + m.reason : "")));
+    }
+    if (!r.counts.inbox) body.appendChild(make("div", "run-extra", "The Inbox has no open tasks."));
+  }
+
+  function renderReview(body, r, preview) {
+    if (preview) {
+      section(body, "Would review", r.reviewed, (t) => {
+        const li = line(t.old_name + "  →  " + t.new_title,
+          t.folder_tag ? "tag " + t.folder_tag : t.folder_tag_issue ? "no folder tag (ambiguous)" : "");
+        li.appendChild(make("div", "run-summary", t.summary));
+        return li;
+      });
+    } else {
+      section(body, "Reviewed", r.applied, (n) => line(typeof n === "string" ? n : (n.name || "")));
+    }
+    section(body, "Failed", r.failed, (f) => line(f.name, f.error));
+    section(body, "Projects not found", r.unresolved, (n) => line(String(n)));
+    if (preview && !r.reviewed.length && !r.failed.length) {
+      body.appendChild(make("div", "run-extra", "No unreviewed tasks in the chosen project(s)."));
+    }
+    if (r.remaining) {
+      body.appendChild(make("div", "run-extra",
+        plural(r.remaining, "more unreviewed task") + " left — run Review again after this."));
+    }
+  }
+
+  function renderRun() {
+    const job = run.job;
+    const panel = $("#run-panel");
+    const busy = BUSY.has(job.state);
+    $("#run-triage").disabled = busy || job.state === "preview";
+    $("#run-review").disabled = busy || job.state === "preview" || run.picked.size === 0;
+    if (job.state === "idle") { panel.hidden = true; return; }
+    panel.hidden = false;
+    panel.classList.toggle("error", job.state === "error");
+
+    const what = job.kind === "triage" ? "Triage Inbox" : "Review " + job.projects.join(", ");
+    const secs = Math.round((Date.now() - run.started) / 1000);
+    panel.querySelector(".run-title").textContent = what;
+    panel.querySelector(".run-status").textContent = {
+      running: "Previewing… " + secs + "s (each task is a Claude API call)",
+      applying: "Applying… " + secs + "s",
+      preview: "Preview — nothing has changed yet",
+      done: "Applied",
+      error: "Failed",
+    }[job.state] || job.state;
+    const apply = $("#run-apply");
+    apply.hidden = job.state !== "preview";
+    const r = job.result;
+    apply.disabled = !r || (job.kind === "triage" ? !r.moved.length : !r.reviewed.length);
+    const discard = $("#run-discard");
+    discard.hidden = busy;
+    discard.textContent = job.state === "preview" ? "Discard" : "Close";
+
+    const body = panel.querySelector(".run-body");
+    body.textContent = "";
+    if (job.state === "error") body.appendChild(make("div", "run-extra", job.error));
+    if (!r) return;
+    // While applying, the result is still the preview's, so keep its wording.
+    const preview = job.state !== "done";
+    if (job.kind === "triage") renderTriage(body, r, preview);
+    else renderReview(body, r, preview);
+  }
+
+  // Review picker: active projects (fetched each time the panel opens, so a new
+  // project shows up), ticked ones remembered for the session.
+  function renderPicker() {
+    const root = $("#review-picker");
+    const list = root.querySelector(".filter-list");
+    list.textContent = "";
+    if (run.projects === null) {
+      list.appendChild(make("li", "run-note", "Loading projects…"));
+    } else if (typeof run.projects === "string") {
+      list.appendChild(make("li", "run-note", run.projects));
+    } else {
+      for (const name of run.projects) {
+        const li = make("li");
+        const label = make("label");
+        const box = make("input");
+        box.type = "checkbox";
+        box.dataset.id = name;
+        box.checked = run.picked.has(name);
+        label.append(box, make("span", "name", name));
+        li.appendChild(label);
+        list.appendChild(li);
+      }
+    }
+    root.querySelector(".filter-value").textContent =
+      run.picked.size ? "Review (" + run.picked.size + ")" : "Review";
+    root.querySelector(".filter-clear").disabled = run.picked.size === 0;
+    renderRun();
+  }
+  async function loadPickerProjects() {
+    if (run.projects === null || typeof run.projects === "string") { run.projects = null; renderPicker(); }
+    try {
+      const names = (await runRequest("GET", "/api/projects")).projects;
+      run.projects = names;
+      run.picked = new Set([...run.picked].filter((n) => names.includes(n)));
+    } catch (err) {
+      run.projects = "Couldn't list projects: " + err.message;
+    }
+    renderPicker();
+  }
+
   // ------------------------------ chrome ------------------------------
 
   function showBanner(message) {
@@ -930,8 +1184,34 @@
   });
   $("#sort").addEventListener("change", (ev) => { state.sort = ev.target.value; render(); });
   $("#refresh").addEventListener("click", load);
+
+  $("#run-triage").addEventListener("click", () => startRun("/api/run/triage"));
+  (() => {
+    const root = $("#review-picker");
+    root.querySelector(".filter-button").addEventListener("click", () => {
+      const open = !root.classList.contains("open");
+      closeFilters(root);
+      setFilterOpen(root, open);
+      if (open) loadPickerProjects();
+    });
+    root.querySelector(".filter-list").addEventListener("change", (ev) => {
+      const box = ev.target;
+      if (!(box instanceof HTMLInputElement)) return;
+      if (box.checked) run.picked.add(box.dataset.id); else run.picked.delete(box.dataset.id);
+      renderPicker();
+    });
+    root.querySelector(".filter-clear").addEventListener("click", () => { run.picked.clear(); renderPicker(); });
+  })();
+  $("#run-review").addEventListener("click", () =>
+    startRun("/api/run/review", { projects: [...run.picked] }));
+  $("#run-apply").addEventListener("click", () => startRun("/api/run/apply"));
+  $("#run-discard").addEventListener("click", () => startRun("/api/run/discard"));
+  // Tick the elapsed-seconds counter while a job runs.
+  setInterval(() => { if (BUSY.has(run.job.state)) renderRun(); }, 1000);
+
   setInterval(() => { if (!state.dragging && state.inflight === 0) load(); }, 30000);
   load();
+  pollRun(); // pick up a job started before this page (re)loaded
 })();
 </script>
 </body>

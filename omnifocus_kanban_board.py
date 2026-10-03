@@ -12,7 +12,14 @@ a card can be pushed into OmniFocus's Forecast perspective (with its "Show
 Flagged" setting on) without leaving the board.
 
 Unlike the other tools there is no --apply: each drop or flag click is the
-user's explicit action and writes immediately. Makes no Claude API calls.
+user's explicit action and writes immediately. Those writes make no Claude
+API calls.
+
+The header's Triage Inbox and Review buttons are the exception: they run
+omnifocus_inbox_triage / omnifocus_task_reviewer (which do call the Claude API)
+as a background job that previews first. Apply then writes exactly the
+previewed result, re-using the cached classification/enrichments instead of
+calling the model again.
 """
 
 import argparse
@@ -25,6 +32,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 
@@ -270,6 +278,24 @@ def validate_flag(body, task_ids, loaded=True):
     return found["task_id"], flagged
 
 
+def validate_review_projects(body, known):
+    """Return the de-duplicated project names from a /api/run/review body, or
+    raise MoveError. Every name must be one the last /api/projects read
+    returned (`known`; None when it has not run yet)."""
+    if not isinstance(body, dict):
+        raise MoveError("request body must be a JSON object")
+    names = body.get("projects")
+    if not isinstance(names, list) or not names \
+            or not all(isinstance(n, str) for n in names):
+        raise MoveError("projects must be a non-empty list of project names")
+    if known is None:
+        raise MoveError("load the project list before reviewing")
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        raise MoveError(f"unknown project(s): {', '.join(unknown)}; reload the list")
+    return list(dict.fromkeys(names))
+
+
 class BoardState:
     """Id sets and the tag parent map from the most recent successful read,
     plus the lock that serializes every osascript call (so two quick drops
@@ -463,20 +489,162 @@ def flag_task(kanban_tag, task_id, flagged, max_note_chars=MAX_NOTE_CHARS):
     return run_jxa_or_raise(FLAG_TASK_JXA, cfg)
 
 
+# --------------------------- triage / review runs -------------------------
+
+# Tasks a board Review previews per run; the panel reports how many are left,
+# so a large project is drained over several clicks rather than one long run.
+REVIEW_MAX_TASKS = 20
+
+_SYSTEM_EXIT_MESSAGE = "failed; see the board's terminal for details"
+
+
+def _error_text(exc):
+    """A page-facing message for a failed job. The toolkit's read paths
+    print to stderr and raise SystemExit(1), so a bare exit code points at the
+    terminal; a SystemExit carrying a message (bad .env config) is shown as is."""
+    if isinstance(exc, SystemExit):
+        return exc.code if isinstance(exc.code, str) else _SYSTEM_EXIT_MESSAGE
+    return str(exc) or type(exc).__name__
+
+
+def triage_preview(run=None, classify=None):
+    """Dry-run the Inbox triage; return (result, apply). `apply` writes the
+    previewed classification via run_triage(apply=True) without classifying
+    again — the Inbox is re-read, so only decisions for tasks still there (and
+    projects still active) are applied."""
+    if run is None or classify is None:
+        import omnifocus_inbox_triage as triage  # lazy: loads the API config
+        run = run or triage.run_triage
+        classify = classify or triage.classify_in_batches
+    cached = SimpleNamespace(decisions=[])
+
+    def capture(items, projects):
+        nonlocal cached
+        cached = classify(items, projects)
+        return cached
+
+    result = run(apply=False, classify=capture)
+    return result, lambda: run(apply=True, classify=lambda items, projects: cached)
+
+
+def review_preview(projects, max_tasks=REVIEW_MAX_TASKS, run=None, review=None):
+    """Dry-run the reviewer over `projects` (at most max_tasks tasks); return
+    (result, apply). `apply` re-reads the projects and writes the cached
+    enrichment of each previewed success still unreviewed, paired with the
+    fresh task data — no model call, and nothing the preview didn't show."""
+    if run is None or review is None:
+        import omnifocus_task_reviewer as reviewer  # lazy: loads the API config
+        run = run or reviewer.run_review
+        review = review or reviewer.review_tasks
+    cached = {}
+
+    def capture(tasks):
+        reviewed, failed = review(tasks)
+        cached.update((t["id"], e) for t, e in reviewed)
+        return reviewed, failed
+
+    def replay(tasks):
+        return [(t, cached[t["id"]]) for t in tasks if t["id"] in cached], []
+
+    result = run(projects, apply=False, review=capture, max_tasks=max_tasks)
+    return result, lambda: run(projects, apply=True, review=replay)
+
+
+class JobRunner:
+    """One triage/review job at a time, run off the request thread.
+
+    States: idle -> running -> preview (or error); preview -> applying -> done
+    (or error); discard returns preview/done/error to idle. A new job may start
+    from idle, done or error — never over a running job or an unapplied
+    preview. `spawn` runs the job body (a daemon thread by default; tests run
+    it inline) and `apply_lock` (the board's osascript lock) is held while
+    applying, so the write never interleaves with a card drop."""
+
+    def __init__(self, spawn=None, apply_lock=None):
+        self._spawn = spawn or (lambda fn: threading.Thread(target=fn, daemon=True).start())
+        self._apply_lock = apply_lock or threading.Lock()
+        self._lock = threading.Lock()
+        self._reset()
+
+    def _reset(self):
+        self.state, self.kind, self.projects = "idle", None, []
+        self.result, self.error, self._apply = None, None, None
+
+    def snapshot(self):
+        with self._lock:
+            return {"state": self.state, "kind": self.kind,
+                    "projects": list(self.projects), "result": self.result,
+                    "error": self.error}
+
+    def start(self, kind, projects, preview):
+        """Start `preview` (-> (result, apply)) as a new job. Returns (ok, message)."""
+        with self._lock:
+            if self.state in ("running", "applying"):
+                return False, f"a {self.kind} run is already in progress"
+            if self.state == "preview":
+                return False, f"apply or discard the {self.kind} preview first"
+            self._reset()
+            self.state, self.kind, self.projects = "running", kind, list(projects)
+        self._spawn(lambda: self._run(preview, "preview"))
+        return True, ""
+
+    def apply(self):
+        with self._lock:
+            if self.state != "preview":
+                return False, "there is no preview to apply"
+            self.state = "applying"
+            apply = self._apply
+
+        def body():
+            with self._apply_lock:
+                return apply(), None
+        self._spawn(lambda: self._run(body, "done"))
+        return True, ""
+
+    def discard(self):
+        with self._lock:
+            if self.state in ("running", "applying"):
+                return False, f"the {self.kind} run is still in progress"
+            self._reset()
+        return True, ""
+
+    def _run(self, body, next_state):
+        try:
+            result, apply = body()
+        except BaseException as e:  # SystemExit from the toolkit's read paths
+            with self._lock:
+                self.state, self.error = "error", _error_text(e)
+            return
+        with self._lock:
+            self.state, self.result = next_state, result
+            if apply is not None:
+                self._apply = apply
+
+
 # --------------------------------- BoardApp -------------------------------
 
 MISSING_TAG_MESSAGE = ("No tag named {tag!r}. Run the Kanban plug-in's "
                        "Display Board action first.")
 
 
+def list_active_projects():
+    """Active project names, in OmniFocus order, via the triage tool's read."""
+    import omnifocus_inbox_triage as triage  # lazy: loads the API config
+    _, projects = triage.read_omnifocus()
+    return [p["name"] for p in projects]
+
+
 class BoardApp:
     """The board's endpoint logic, independent of HTTP: each method returns
-    (status, payload). `read`/`move`/`flag` are injectable for tests."""
+    (status, payload). `read`/`move`/`flag`, the run jobs and the project
+    list are injectable for tests."""
 
     def __init__(self, kanban_tag=KANBAN_TAG, *, page_path=PAGE_PATH,
                  read=read_board, move=move_task, flag=flag_task,
                  max_note_chars=MAX_NOTE_CHARS, lane_order=KANBAN_LANE_ORDER,
-                 now=None):
+                 now=None, list_projects=list_active_projects,
+                 triage_job=triage_preview, review_job=review_preview,
+                 runner=None):
         self.kanban_tag = kanban_tag
         self.page_path = page_path
         self.read = read
@@ -486,6 +654,11 @@ class BoardApp:
         self.lane_order = lane_order
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.state = BoardState()
+        self.list_projects = list_projects
+        self.triage_job = triage_job
+        self.review_job = review_job
+        self.runner = runner or JobRunner(apply_lock=self.state.lock)
+        self.project_names = None  # set by the last successful get_projects
 
     def page(self):
         return Path(self.page_path).read_bytes()
@@ -543,6 +716,50 @@ class BoardApp:
         return 200, {"card": finish_card(raw["card"], self.max_note_chars,
                                          parent_of=self.state.parent_of)}
 
+    # Triage / review runs. Starting or applying answers 202 with the job's
+    # snapshot; the page then polls GET /api/run until the state settles.
+
+    def get_projects(self):
+        try:
+            names = self.list_projects()
+        except BaseException as e:  # read_omnifocus exits on osascript failure
+            return 500, {"error": f"could not list projects: {_error_text(e)}"}
+        self.project_names = set(names)
+        return 200, {"projects": names}
+
+    def get_run(self):
+        return 200, self.runner.snapshot()
+
+    def post_run_triage(self, body, has_header):
+        if not has_header:
+            return 400, {"error": "missing X-Kanban header"}
+        return self._started(self.runner.start("triage", [], self.triage_job))
+
+    def post_run_review(self, body, has_header):
+        if not has_header:
+            return 400, {"error": "missing X-Kanban header"}
+        try:
+            projects = validate_review_projects(body, self.project_names)
+        except MoveError as e:
+            return 400, {"error": str(e)}
+        return self._started(self.runner.start(
+            "review", projects, lambda: self.review_job(projects, REVIEW_MAX_TASKS)))
+
+    def post_run_apply(self, body, has_header):
+        if not has_header:
+            return 400, {"error": "missing X-Kanban header"}
+        return self._started(self.runner.apply())
+
+    def post_run_discard(self, body, has_header):
+        if not has_header:
+            return 400, {"error": "missing X-Kanban header"}
+        ok, message = self.runner.discard()
+        return (200, self.runner.snapshot()) if ok else (409, {"error": message})
+
+    def _started(self, outcome):
+        ok, message = outcome
+        return (202, self.runner.snapshot()) if ok else (409, {"error": message})
+
 
 # ------------------------------- HTTP server ------------------------------
 
@@ -565,10 +782,18 @@ class KanbanHandler(BaseHTTPRequestHandler):
             self._send(200, app.page(), "text/html; charset=utf-8")
         elif path == "/api/board":
             self._send(*app.get_board())
+        elif path == "/api/run":
+            self._send(*app.get_run())
+        elif path == "/api/projects":
+            self._send(*app.get_projects())
         else:
             self._send(404, {"error": "not found"})
 
-    _POST_ROUTES = {"/api/move": "post_move", "/api/flag": "post_flag"}
+    _POST_ROUTES = {"/api/move": "post_move", "/api/flag": "post_flag",
+                    "/api/run/triage": "post_run_triage",
+                    "/api/run/review": "post_run_review",
+                    "/api/run/apply": "post_run_apply",
+                    "/api/run/discard": "post_run_discard"}
 
     def do_POST(self):
         app = self.server.app
